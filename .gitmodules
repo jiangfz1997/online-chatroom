@@ -4,3 +4,6 @@
 [submodule "websocket_server"]
 	path = websocket_server
 	url = https://github.com/jiangfz1997/chatroom-websocket-server.git
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/jiangfz1997/chatroom-frontend.git
