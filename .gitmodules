@@ -1,0 +1,6 @@
+[submodule "api_server"]
+	path = api_server
+	url = https://github.com/jiangfz1997/chatroom-api-server.git
+[submodule "websocket_server"]
+	path = websocket_server
+	url = https://github.com/jiangfz1997/chatroom-websocket-server.git
