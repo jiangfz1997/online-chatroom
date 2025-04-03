@@ -7,3 +7,6 @@
 [submodule "frontend"]
 	path = frontend
 	url = https://github.com/jiangfz1997/chatroom-frontend.git
+[submodule "persist_worker"]
+	path = persist_worker
+	url = https://github.com/jiangfz1997/chatroom-persist-worker.git
