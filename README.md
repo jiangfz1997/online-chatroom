@@ -4,16 +4,16 @@ This is a scalable, modular, real-time chatroom system built using Go, WebSocket
 
 
 ---
-## Online Demo
+## ~~Online Demo~~ 
+> ⚠️ Note on Live Demo: The live deployment (AWS/K3s) is currently spun down for cost optimization. You can run the project locally using the provided scripts.
 
 The system has already been deployed to a cloud environment.
 
 To try it out, you can visit:
 
-[http://3.133.141.191/](http://3.133.141.191/)
+~~[http://3.133.141.191/](http://3.133.141.191/)~~
 
-> Note: The project is currently hosted on a minimal AWS Lightsail instance for cost-saving purposes. Rhe server may occasionally crash or restart.  
-> If the site is temporarily unavailable, feel free to contact me for assistance.
+Note: The project is currently hosted on a minimal AWS Lightsail instance for cost-saving purposes. Rhe server may occasionally crash or restart.If the site is temporarily unavailable, feel free to contact me for assistance.
 
 ![alt text](1743819200909.png)
 ![alt text](1743819249962.png)
