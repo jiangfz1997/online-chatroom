@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: bitnami/zookeeper:3.8
+    container_name: kafka-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    networks:
+      - chat-net
+
+  kafka:
+    image: bitnami/kafka:3.6
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_DEFAULT_REPLICATION_FACTOR=1
+      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    depends_on:
+      - zookeeper
+    networks:
+      - chat-net
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - chat-net
+
+  dynamodb:
+    image: amazon/dynamodb-local
+    container_name: dynamodb-local
+    ports:
+      - "8000:8000"
+    networks:
+      - chat-net
+
+  apiserver:
+    build:
+      context: ./api_server
+    container_name: chat-apiserver
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - kafka
+      - dynamodb
+    networks:
+      - chat-net
+
+  websocket1:
+    build:
+      context: ./websocket_server
+    image: online-chatroom-websocket:latest
+    container_name: chat-ws-1
+    ports:
+      - "8081:8081"
+    env_file:
+      - .env.ws1
+    depends_on:
+      - redis
+      - kafka
+      - dynamodb
+    networks:
+      - chat-net
+
+  websocket2:
+    image: online-chatroom-websocket:latest
+    container_name: chat-ws-2
+    ports:
+      - "8082:8082"
+    env_file:
+      - .env.ws2
+    depends_on:
+      - redis
+      - kafka
+      - dynamodb
+    networks:
+      - chat-net
+
+  persistworker:
+      build:
+        context: ./persist_worker
+      container_name: persist-worker
+      env_file:
+        - ./persist_worker/.env
+      depends_on:
+        - redis
+        - dynamodb
+      networks:
+        - chat-net
+
+networks:
+  chat-net:
+    driver: bridge

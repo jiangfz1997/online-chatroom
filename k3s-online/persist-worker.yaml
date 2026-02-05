@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: persist-worker
+  labels:
+    app: persist-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: persist-worker
+  template:
+    metadata:
+      labels:
+        app: persist-worker
+    spec:
+      containers:
+        - name: persist-worker
+          image: jiangfz/online-chatroom-persist-worker:latest
+          imagePullPolicy: Always
+          env:
+            - name: REDIS_ADDR
+              value: "redis:6379"
+            - name: DYNAMODB_REGION
+              value: "us-east-2"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: accessKey
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: secretKey
+            - name: DYNAMODB_ENDPOINT
+              value: ""
