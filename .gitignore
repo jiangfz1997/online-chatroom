@@ -1,2 +1,10 @@
 
 .idea
+
+# AWS credentials and secrets — never commit these
+k3s-online/aws-credentials.yaml
+k3s-online/db.txt
+
+# Local dev config
+.env
+.env.*
