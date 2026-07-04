@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem \"g:\\\\DistributedSystem\\\\chat-app\\\\online-chatroom\\\\api_server\" -Recurse | Where-Object {!$_.PSIsContainer} | Select-Object FullName)",
+      "PowerShell(java -version 2>&1)",
+      "PowerShell(mvn -version 2>&1)",
+      "PowerShell($env:JAVA_HOME)",
+      "PowerShell(java -version 2>&1; echo \"JAVA_HOME: $env:JAVA_HOME\"; mvn -version 2>&1)",
+      "PowerShell(cmd /c \"dir /s /b G:\\\\DistributedSystem\\\\chat-app\\\\online-chatroom\\\\api_server_java 2>&1\")",
+      "PowerShell(head -50)",
+      "PowerShell(Get-ChildItem \"G:\\\\DistributedSystem\\\\chat-app\\\\online-chatroom\\\\api_server_java\" -Recurse | Where-Object {!$_.PSIsContainer} | Select-Object -First 60 | Select-Object FullName)",
+      "PowerShell(cmd /c \"dir /s /b G:\\\\DistributedSystem\\\\chat-app\\\\online-chatroom\\\\api_server_java\\\\src\")",
+      "PowerShell(cmd /c \"dir /s /b G:\\\\DistributedSystem\\\\chat-app\\\\online-chatroom\\\\api_server_java\\\\src\\\\main\")",
+      "PowerShell(cmd /c \"dir /s /b G:\\\\DistributedSystem\\\\chat-app\\\\online-chatroom\\\\api_server_java\\\\src\\\\main\\\\java\")"
+    ]
+  }
+}

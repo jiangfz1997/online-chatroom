@@ -1,0 +1,1 @@
+helm install kafka bitnami/kafka --set replicaCount=1 --set zookeeper.enabled=true --set auth.enabled=false --set auth.clientProtocol=plaintext --set allowPlaintextListener=true --set listeners.client.protocol=PLAINTEXT --set sasl.enabled=false --set service.type=ClusterIP --set kraft.enabled=false

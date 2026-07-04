@@ -1,0 +1,7 @@
+env:
+  - name: WS_HOST
+    value: "ws://ws-service:8081"
+  - name: DYNAMODB_REGION
+    value: "us-east-1"
+  - name: DYNAMODB_ENDPOINT
+    value: "http://dynamodb:8000"
