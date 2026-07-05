@@ -3,14 +3,13 @@ services:
     image: confluentinc/cp-kafka:7.6.1
     container_name: kafka
     ports:
-      - "9092:9092"   # Docker-internal (Go services, inter-broker)
-      - "9094:9094"   # Host-external (Java services running via mvn spring-boot:run)
+      - "9092:9092"   # Docker-internal (inter-broker)
+      - "9094:9094"   # Host-external (Java services via mvn spring-boot:run)
     environment:
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
-      # BROKER: Docker-network traffic  |  EXTERNAL: host-side traffic (Java apps)
       KAFKA_LISTENERS: 'BROKER://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9094'
       KAFKA_ADVERTISED_LISTENERS: 'BROKER://kafka:9092,EXTERNAL://localhost:9094'
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'BROKER:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT'
@@ -39,63 +38,13 @@ services:
     networks:
       - chat-net
 
-  apiserver:
-    build:
-      context: ./api_server
-    container_name: chat-apiserver
-    ports:
-      - "8080:8080"
-    env_file:
-      - .env
-    depends_on:
-      - redis
-      - kafka
-      - dynamodb
-    networks:
-      - chat-net
-
-  websocket1:
-    build:
-      context: ./websocket_server
-    image: online-chatroom-websocket:latest
-    container_name: chat-ws-1
-    ports:
-      - "8081:8081"
-    env_file:
-      - .env.ws1
-    depends_on:
-      - redis
-      - kafka
-      - dynamodb
-    networks:
-      - chat-net
-
-  websocket2:
-    image: online-chatroom-websocket:latest
-    container_name: chat-ws-2
-    ports:
-      - "8082:8082"
-    env_file:
-      - .env.ws2
-    depends_on:
-      - redis
-      - kafka
-      - dynamodb
-    networks:
-      - chat-net
-
-  persistworker:
-    build:
-      context: ./persist_worker
-    container_name: persist-worker
-    env_file:
-      - ./persist_worker/.env
-    depends_on:
-      - redis
-      - dynamodb
-    networks:
-      - chat-net
-
 networks:
   chat-net:
     driver: bridge
+
+# Java services are run locally with:
+#   api_server_java:    mvn spring-boot:run  (port 8080)
+#   ws_server_java:     mvn spring-boot:run  (port 8081)
+#   persist_worker_java: mvn spring-boot:run
+#
+# Go (archived): see archive/go/ or checkout tag v1.0-go
