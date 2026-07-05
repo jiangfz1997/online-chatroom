@@ -8,3 +8,14 @@ k3s-online/db.txt
 # Local dev config
 .env
 .env.*
+
+# Planning docs (not tracked)
+tmp_doc/
+
+# Maven build output
+target/
+test_out.txt
+test_output.txt
+
+# Claude local settings
+.claude/settings.local.json
