@@ -1,0 +1,87 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [master]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 492832370104.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for OIDC
+      contents: read
+
+    strategy:
+      matrix:
+        include:
+          - service: api-server
+            ecr_repo: chatroom-api-server
+            dockerfile: docker/api-server/Dockerfile
+            context: api_server_java
+          - service: ws-server
+            ecr_repo: chatroom-ws-server
+            dockerfile: ws_server_java/Dockerfile
+            context: ws_server_java
+          - service: persist-worker
+            ecr_repo: chatroom-persist-worker
+            dockerfile: persist_worker_java/Dockerfile
+            context: persist_worker_java
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::492832370104:role/github-actions-chatroom
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to ECR
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push ${{ matrix.service }}
+      uses: docker/build-push-action@v5
+      with:
+        context: ${{ matrix.context }}
+        file: ${{ matrix.dockerfile }}
+        push: true
+        tags: ${{ env.ECR_REGISTRY }}/${{ matrix.ecr_repo }}:latest
+        cache-from: type=gha,scope=${{ matrix.service }}
+        cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  deploy:
+    name: Deploy to k3s
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Deploy via SSH
+      uses: appleboy/ssh-action@v1
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ec2-user
+        key: ${{ secrets.EC2_SSH_KEY }}
+        script: |
+          # Pull latest images
+          sudo kubectl rollout restart deployment/api-server
+          sudo kubectl rollout restart deployment/ws-server
+          sudo kubectl rollout restart deployment/persist-worker
+
+          # Wait for rollout to complete
+          sudo kubectl rollout status deployment/api-server --timeout=180s
+          sudo kubectl rollout status deployment/ws-server --timeout=180s
+          sudo kubectl rollout status deployment/persist-worker --timeout=180s
+
+          echo "Deploy complete"
+          sudo kubectl get pods

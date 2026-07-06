@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: persist-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: persist-worker
+  template:
+    metadata:
+      labels:
+        app: persist-worker
+    spec:
+      containers:
+      - name: persist-worker
+        image: 492832370104.dkr.ecr.us-east-1.amazonaws.com/chatroom-persist-worker:latest
+        env:
+        - name: SPRING_DATA_REDIS_HOST
+          value: redis
+        - name: AWS_DYNAMODB_REGION
+          value: "us-east-1"
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Xms64m -Xmx128m -XX:+UseContainerSupport"
+        resources:
+          requests:
+            memory: "100Mi"
+            cpu: "50m"
+          limits:
+            memory: "160Mi"
+            cpu: "200m"

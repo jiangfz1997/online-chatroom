@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ws-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ws-server
+  template:
+    metadata:
+      labels:
+        app: ws-server
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: ws-server
+        image: 492832370104.dkr.ecr.us-east-1.amazonaws.com/chatroom-ws-server:latest
+        ports:
+        - containerPort: 8081
+        env:
+        - name: SPRING_DATA_REDIS_HOST
+          value: redis
+        - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+          value: kafka-0.kafka:9092
+        - name: AWS_DYNAMODB_REGION
+          value: "us-east-1"
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: chatroom-secrets
+              key: jwt-secret
+        - name: SERVER_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Xms128m -Xmx256m -XX:+UseContainerSupport"
+        resources:
+          requests:
+            memory: "200Mi"
+            cpu: "100m"
+          limits:
+            memory: "320Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ws-server
+spec:
+  selector:
+    app: ws-server
+  ports:
+  - port: 8081
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ws-server-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ws-server
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70

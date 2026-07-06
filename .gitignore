@@ -19,3 +19,5 @@ test_output.txt
 
 # Claude local settings
 .claude/settings.local.json
+archive/go/k3s-online/aws-credentials.yaml
+archive/go/k3s-online/db.txt
