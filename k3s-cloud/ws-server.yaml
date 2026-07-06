@@ -13,6 +13,8 @@ spec:
         app: ws-server
     spec:
       terminationGracePeriodSeconds: 30
+      imagePullSecrets:
+      - name: ecr-secret
       containers:
       - name: ws-server
         image: 492832370104.dkr.ecr.us-east-1.amazonaws.com/chatroom-ws-server:latest
@@ -23,6 +25,8 @@ spec:
           value: redis
         - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
           value: kafka-0.kafka:9092
+        - name: AWS_DYNAMODB_ENDPOINT
+          value: ""
         - name: AWS_DYNAMODB_REGION
           value: "us-east-1"
         - name: JWT_SECRET

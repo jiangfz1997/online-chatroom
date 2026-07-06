@@ -60,7 +60,7 @@ jobs:
         cache-from: type=gha,scope=${{ matrix.service }}
         cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-  deploy:
+  deploy-backend:
     name: Deploy to k3s
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -73,15 +73,51 @@ jobs:
         username: ec2-user
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
-          # Pull latest images
           sudo kubectl rollout restart deployment/api-server
           sudo kubectl rollout restart deployment/ws-server
           sudo kubectl rollout restart deployment/persist-worker
-
-          # Wait for rollout to complete
           sudo kubectl rollout status deployment/api-server --timeout=180s
           sudo kubectl rollout status deployment/ws-server --timeout=180s
           sudo kubectl rollout status deployment/persist-worker --timeout=180s
-
           echo "Deploy complete"
           sudo kubectl get pods
+
+  deploy-frontend:
+    name: Build & Deploy Frontend to S3
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::492832370104:role/github-actions-chatroom
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: frontend/vue-chat/package-lock.json
+
+    - name: Build frontend
+      working-directory: frontend/vue-chat
+      env:
+        VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+        VITE_WS_BASE_URL: ${{ secrets.VITE_WS_BASE_URL }}
+      run: |
+        npm ci
+        npm run build
+
+    - name: Deploy to S3
+      run: |
+        aws s3 sync frontend/vue-chat/dist s3://${{ secrets.S3_BUCKET }} --delete

@@ -12,6 +12,8 @@ spec:
       labels:
         app: api-server
     spec:
+      imagePullSecrets:
+      - name: ecr-secret
       containers:
       - name: api-server
         image: 492832370104.dkr.ecr.us-east-1.amazonaws.com/chatroom-api-server:latest
@@ -20,6 +22,8 @@ spec:
         env:
         - name: SPRING_DATA_REDIS_HOST
           value: redis
+        - name: AWS_DYNAMODB_ENDPOINT
+          value: ""
         - name: AWS_DYNAMODB_REGION
           value: "us-east-1"
         - name: JWT_SECRET
@@ -37,10 +41,9 @@ spec:
             memory: "320Mi"
             cpu: "500m"
         readinessProbe:
-          httpGet:
-            path: /health
+          tcpSocket:
             port: 8080
-          initialDelaySeconds: 30
+          initialDelaySeconds: 45
           periodSeconds: 10
 ---
 apiVersion: v1

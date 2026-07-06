@@ -10,7 +10,7 @@ metadata:
       proxy_set_header Upgrade $http_upgrade;
       proxy_set_header Connection "upgrade";
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
   - http:
       paths:
