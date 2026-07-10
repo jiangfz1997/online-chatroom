@@ -71,6 +71,13 @@
 			<optional>true</optional>
 		</dependency>
 
+		<!-- Structured JSON logging (prod profile), for CloudWatch Logs Insights -->
+		<dependency>
+			<groupId>net.logstash.logback</groupId>
+			<artifactId>logstash-logback-encoder</artifactId>
+			<version>7.4</version>
+		</dependency>
+
 		<!-- Test -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>

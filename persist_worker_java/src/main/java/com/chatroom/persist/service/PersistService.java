@@ -4,12 +4,14 @@ import com.chatroom.persist.model.RawMessage;
 import com.chatroom.persist.repository.MessageRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Drains the Redis persist queue into DynamoDB on a fixed schedule.
@@ -47,13 +49,18 @@ public class PersistService {
      */
     @Scheduled(fixedDelayString = "${persist.interval-ms:30000}")
     public void syncAllRooms() {
-        Set<String> roomIds = redis.opsForSet().members("rooms:active");
-        if (roomIds == null || roomIds.isEmpty()) {
-            log.debug("No active rooms to sync");
-            return;
+        MDC.put("batchId", UUID.randomUUID().toString().substring(0, 8));
+        try {
+            Set<String> roomIds = redis.opsForSet().members("rooms:active");
+            if (roomIds == null || roomIds.isEmpty()) {
+                log.debug("No active rooms to sync");
+                return;
+            }
+            log.info("Syncing {} active room(s)", roomIds.size());
+            roomIds.forEach(this::syncRoom);
+        } finally {
+            MDC.remove("batchId");
         }
-        log.info("Syncing {} active room(s)", roomIds.size());
-        roomIds.forEach(this::syncRoom);
     }
 
     /**
