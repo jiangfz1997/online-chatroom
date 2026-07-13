@@ -13,7 +13,13 @@ import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.kafka.test.context.EmbeddedKafka;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
@@ -50,7 +56,22 @@ import static org.mockito.Mockito.when;
         "server.id=ws-test-1",
         "aws.dynamodb.endpoint=http://localhost:8000",
 })
+@Testcontainers
 class WsIntegrationTest {
+
+    // RedisMessageListenerContainer (Pub/Sub, see RedisPubSubConfig) connects directly via
+    // RedisConnectionFactory, not the @MockBean'd StringRedisTemplate below, so it needs a
+    // real reachable Redis to start — nothing in this test actually publishes/subscribes
+    // through it, it just needs to exist so context startup doesn't fail.
+    @Container
+    static final GenericContainer<?> REDIS =
+            new GenericContainer<>(DockerImageName.parse("redis:7-alpine")).withExposedPorts(6379);
+
+    @DynamicPropertySource
+    static void redisProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.data.redis.host", REDIS::getHost);
+        registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+    }
 
     @LocalServerPort int port;
 

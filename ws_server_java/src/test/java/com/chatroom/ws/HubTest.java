@@ -1,5 +1,6 @@
 package com.chatroom.ws;
 
+import com.chatroom.redis.RoomOccupancyListener;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.WebSocketSession;
@@ -17,10 +18,12 @@ import static org.mockito.Mockito.*;
 class HubTest {
 
     Hub hub;
+    RoomOccupancyListener occupancyListener;
 
     @BeforeEach
     void setup() {
-        hub = new Hub();
+        occupancyListener = mock(RoomOccupancyListener.class);
+        hub = new Hub(occupancyListener);
         hub.setServerId("test-server");
     }
 
@@ -77,6 +80,49 @@ class HubTest {
         ClientSession c = mockClient("s1", "alice", "ghost-room");
         // Should log a warning but not throw
         hub.leaveRoom("ghost-room", c);
+    }
+
+    // ── occupancy transitions ────────────────────────────────────────────────
+
+    @Test
+    void joinRoom_firstClient_firesOnRoomOccupied() {
+        hub.joinRoom("room1", mockClient("s1", "alice", "room1"));
+        verify(occupancyListener).onRoomOccupied("room1");
+    }
+
+    @Test
+    void joinRoom_secondClientInSameRoom_doesNotRefireOnRoomOccupied() {
+        hub.joinRoom("room1", mockClient("s1", "alice", "room1"));
+        hub.joinRoom("room1", mockClient("s2", "bob", "room1"));
+        verify(occupancyListener, times(1)).onRoomOccupied("room1");
+    }
+
+    @Test
+    void leaveRoom_lastClient_firesOnRoomVacated() {
+        ClientSession c = mockClient("s1", "alice", "room1");
+        hub.joinRoom("room1", c);
+        hub.leaveRoom("room1", c);
+        verify(occupancyListener).onRoomVacated("room1");
+    }
+
+    @Test
+    void leaveRoom_notLastClient_doesNotFireOnRoomVacated() {
+        ClientSession alice = mockClient("s1", "alice", "room1");
+        ClientSession bob   = mockClient("s2", "bob",   "room1");
+        hub.joinRoom("room1", alice);
+        hub.joinRoom("room1", bob);
+        hub.leaveRoom("room1", alice);
+        verify(occupancyListener, never()).onRoomVacated("room1");
+    }
+
+    @Test
+    void localRoomIds_reflectsCurrentlyOccupiedRooms() {
+        hub.joinRoom("room1", mockClient("s1", "alice", "room1"));
+        hub.joinRoom("room2", mockClient("s2", "bob",   "room2"));
+        assertThat(hub.localRoomIds()).containsExactlyInAnyOrder("room1", "room2");
+
+        hub.leaveRoom("room1", hub.getClients("room1").iterator().next());
+        assertThat(hub.localRoomIds()).containsExactly("room2");
     }
 
     // ── broadcast ─────────────────────────────────────────────────────────────
