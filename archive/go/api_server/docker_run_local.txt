@@ -1,0 +1,1 @@
+docker run -p 8080:8080 -e DYNAMODB_ENDPOINT=http://host.docker.internal:8000 -e AWS_REGION=us-west-2 chat-api
