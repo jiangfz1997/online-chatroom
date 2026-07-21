@@ -2,6 +2,7 @@ package com.chatroom.model;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -10,6 +11,7 @@ import java.util.List;
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
+@Builder
 public class Chatroom {
 
     @JsonProperty("room_id")
@@ -17,6 +19,9 @@ public class Chatroom {
 
     @JsonProperty("name")
     private String roomName;
+
+    @JsonProperty("description")
+    private String description;
 
     // Lombok generates isPrivate() for boolean fields, which Jackson maps to "private".
     // @JsonProperty on the field forces the correct key for both serialization and deserialization.

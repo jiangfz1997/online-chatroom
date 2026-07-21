@@ -1,9 +1,11 @@
 package com.chatroom.service;
 
 import com.chatroom.dto.CreateChatroomRequest;
+import com.chatroom.exception.ForbiddenException;
 import com.chatroom.exception.NotFoundException;
 import com.chatroom.model.Chatroom;
 import com.chatroom.repository.ChatroomRepository;
+import com.chatroom.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -24,6 +26,9 @@ class ChatroomServiceTest {
     @Mock
     private ChatroomRepository chatroomRepository;
 
+    @Mock
+    private UserRepository userRepository;
+
     @InjectMocks
     private ChatroomService chatroomService;
 
@@ -33,12 +38,14 @@ class ChatroomServiceTest {
     void createChatroom_success() {
         CreateChatroomRequest req = new CreateChatroomRequest();
         req.setName("general");
+        req.setDescription("the main room");
         req.setPrivate(false);
 
         Chatroom result = chatroomService.createChatroom("alice", req);
 
         // returned chatroom has correct fields
         assertThat(result.getRoomName()).isEqualTo("general");
+        assertThat(result.getDescription()).isEqualTo("the main room");
         assertThat(result.getCreatedBy()).isEqualTo("alice");
         assertThat(result.isPrivate()).isFalse();
         assertThat(result.getRoomId()).isNotBlank();
@@ -55,7 +62,7 @@ class ChatroomServiceTest {
 
     @Test
     void joinChatroom_success() {
-        Chatroom existing = chatroom("room-1", List.of("alice"));
+        Chatroom existing = chatroom("room-1", false, List.of("alice"));
         when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
 
         chatroomService.joinChatroom("bob", "room-1");
@@ -74,7 +81,7 @@ class ChatroomServiceTest {
 
     @Test
     void joinChatroom_alreadyMember_throwsIllegalArgument() {
-        Chatroom existing = chatroom("room-1", List.of("alice", "bob"));
+        Chatroom existing = chatroom("room-1", false, List.of("alice", "bob"));
         when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
 
         assertThatThrownBy(() -> chatroomService.joinChatroom("bob", "room-1"))
@@ -84,11 +91,47 @@ class ChatroomServiceTest {
         verify(chatroomRepository, never()).addUserToRoom(any(), any());
     }
 
+    @Test
+    void joinChatroom_privateRoom_throwsForbidden() {
+        Chatroom existing = chatroom("room-1", true, List.of("alice"));
+        when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> chatroomService.joinChatroom("bob", "room-1"))
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessage("This chatroom is private");
+
+        verify(chatroomRepository, never()).addUserToRoom(any(), any());
+    }
+
+    // ── addMember (creator invite) ────────────────────────────────────────────
+
+    @Test
+    void addMember_byCreator_success() {
+        Chatroom existing = chatroom("room-1", true, List.of("alice"));
+        when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
+
+        chatroomService.addMember("alice", "room-1", "bob");
+
+        verify(chatroomRepository, times(1)).addUserToRoom("room-1", "bob");
+    }
+
+    @Test
+    void addMember_byNonCreator_throwsForbidden() {
+        Chatroom existing = chatroom("room-1", true, List.of("alice"));
+        when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> chatroomService.addMember("bob", "room-1", "carol"))
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessage("Only the room creator can add members");
+
+        verify(chatroomRepository, never()).addUserToRoom(any(), any());
+    }
+
     // ── exitChatroom ──────────────────────────────────────────────────────────
 
     @Test
     void exitChatroom_success() {
-        Chatroom existing = chatroom("room-1", List.of("alice", "bob"));
+        Chatroom existing = chatroom("room-1", false, List.of("alice", "bob"));
         when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
 
         chatroomService.exitChatroom("bob", "room-1");
@@ -110,8 +153,8 @@ class ChatroomServiceTest {
     @Test
     void getUserChatrooms_returnsList() {
         List<Chatroom> rooms = List.of(
-                chatroom("room-1", List.of("alice")),
-                chatroom("room-2", List.of("alice", "bob"))
+                chatroom("room-1", false, List.of("alice")),
+                chatroom("room-2", false, List.of("alice", "bob"))
         );
         when(chatroomRepository.findByUsername("alice")).thenReturn(rooms);
 
@@ -125,10 +168,10 @@ class ChatroomServiceTest {
 
     @Test
     void getChatroomByRoomId_success() {
-        Chatroom existing = chatroom("room-1", List.of("alice"));
+        Chatroom existing = chatroom("room-1", false, List.of("alice"));
         when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
 
-        Chatroom result = chatroomService.getChatroomByRoomId("room-1");
+        Chatroom result = chatroomService.getChatroomByRoomId("room-1", "bob");
 
         assertThat(result.getRoomId()).isEqualTo("room-1");
     }
@@ -137,15 +180,33 @@ class ChatroomServiceTest {
     void getChatroomByRoomId_notFound_throwsNotFound() {
         when(chatroomRepository.findByRoomId("no-such-room")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> chatroomService.getChatroomByRoomId("no-such-room"))
+        assertThatThrownBy(() -> chatroomService.getChatroomByRoomId("no-such-room", "alice"))
+                .isInstanceOf(NotFoundException.class)
+                .hasMessage("Chatroom not found");
+    }
+
+    @Test
+    void getChatroomByRoomId_privateRoomNonMember_throwsNotFound() {
+        Chatroom existing = chatroom("room-1", true, List.of("alice"));
+        when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
+
+        // non-members must not even learn a private room exists
+        assertThatThrownBy(() -> chatroomService.getChatroomByRoomId("room-1", "bob"))
                 .isInstanceOf(NotFoundException.class)
                 .hasMessage("Chatroom not found");
     }
 
     // ── test helper ───────────────────────────────────────────────────────────
 
-    private Chatroom chatroom(String roomId, List<String> members) {
-        return new Chatroom(roomId, "Test Room", false, "alice", "2024-01-01T00:00:00Z",
-                new ArrayList<>(members));
+    private Chatroom chatroom(String roomId, boolean isPrivate, List<String> members) {
+        return Chatroom.builder()
+                .roomId(roomId)
+                .roomName("Test Room")
+                .description(null)
+                .isPrivate(isPrivate)
+                .createdBy("alice")
+                .createdAt("2024-01-01T00:00:00Z")
+                .members(new ArrayList<>(members))
+                .build();
     }
 }

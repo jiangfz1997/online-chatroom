@@ -8,11 +8,13 @@ import com.chatroom.repository.UserRepository;
 import com.chatroom.util.JwtUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.util.Optional;
 
@@ -34,6 +36,9 @@ class UserServiceTest {
     @Mock
     private ValueOperations<String, String> valueOperations;
 
+    @Mock
+    private PasswordEncoder passwordEncoder;
+
     @InjectMocks
     private UserService userService;
 
@@ -45,34 +50,58 @@ class UserServiceTest {
         req.setUsername("john");
         req.setPassword("123");
 
-        // doNothing: createUser returns void, just verify it was called
+        when(passwordEncoder.encode("123")).thenReturn("$2a$hashed");
         doNothing().when(userRepository).createUser(any(User.class));
 
         assertThatCode(() -> userService.register(req))
                 .doesNotThrowAnyException();
 
-        verify(userRepository, times(1)).createUser(any(User.class));
+        // password is stored hashed, and profile defaults are set to the username
+        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+        verify(userRepository, times(1)).createUser(captor.capture());
+        assertThat(captor.getValue().getPassword()).isEqualTo("$2a$hashed");
+        assertThat(captor.getValue().getDisplayName()).isEqualTo("john");
+        assertThat(captor.getValue().getAvatarSeed()).isEqualTo("john");
     }
 
     // ── login ─────────────────────────────────────────────────
 
     @Test
-    void login_success() {
+    void login_success_withHashedPassword() {
         LoginRequest req = new LoginRequest();
         req.setUsername("john");
         req.setPassword("123");
 
         when(userRepository.findByUsername("john"))
-                .thenReturn(Optional.of(new User("john", "123")));
-        when(jwtUtil.generateToken("john"))
-                .thenReturn("fake-token");
-        when(redisTemplate.opsForValue())
-                .thenReturn(valueOperations);
+                .thenReturn(Optional.of(new User("john", "$2a$hashed")));
+        when(passwordEncoder.matches("123", "$2a$hashed")).thenReturn(true);
+        when(jwtUtil.generateToken("john")).thenReturn("fake-token");
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
 
         String token = userService.login(req);
 
         assertThat(token).isEqualTo("fake-token");
-        verify(redisTemplate.opsForValue(), times(1)).set(anyString(), anyString(), any());
+        verify(valueOperations, times(1)).set(anyString(), anyString(), any());
+    }
+
+    @Test
+    void login_legacyPlaintextPassword_verifiesAndUpgrades() {
+        LoginRequest req = new LoginRequest();
+        req.setUsername("john");
+        req.setPassword("123");
+
+        // stored value is legacy plaintext (not a bcrypt hash)
+        when(userRepository.findByUsername("john"))
+                .thenReturn(Optional.of(new User("john", "123")));
+        when(passwordEncoder.encode("123")).thenReturn("$2a$upgraded");
+        when(jwtUtil.generateToken("john")).thenReturn("fake-token");
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+
+        String token = userService.login(req);
+
+        assertThat(token).isEqualTo("fake-token");
+        // the plaintext record is lazily upgraded to a hash
+        verify(userRepository, times(1)).updatePassword("john", "$2a$upgraded");
     }
 
     @Test
@@ -96,7 +125,8 @@ class UserServiceTest {
         req.setPassword("wrong");
 
         when(userRepository.findByUsername("john"))
-                .thenReturn(Optional.of(new User("john", "123")));
+                .thenReturn(Optional.of(new User("john", "$2a$hashed")));
+        when(passwordEncoder.matches("wrong", "$2a$hashed")).thenReturn(false);
 
         assertThatThrownBy(() -> userService.login(req))
                 .isInstanceOf(UnauthorizedException.class)

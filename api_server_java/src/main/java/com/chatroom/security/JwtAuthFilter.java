@@ -6,6 +6,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
@@ -21,7 +22,8 @@ import java.util.Set;
  * SecurityContextHolder.getContext().getAuthentication().getName().
  *
  * If the token is missing the request continues as anonymous (public routes pass).
- * If the token is present but invalid a 401 is returned immediately.
+ * If the token is present but invalid — bad signature, expired, or revoked via
+ * logout (no longer in Redis) — a 401 is returned immediately.
  */
 @Slf4j
 @Component
@@ -32,9 +34,11 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     );
 
     private final JwtUtil jwtUtil;
+    private final StringRedisTemplate redisTemplate;
 
-    public JwtAuthFilter(JwtUtil jwtUtil) {
+    public JwtAuthFilter(JwtUtil jwtUtil, StringRedisTemplate redisTemplate) {
         this.jwtUtil = jwtUtil;
+        this.redisTemplate = redisTemplate;
     }
 
     @Override
@@ -61,6 +65,14 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         try {
             String username = jwtUtil.parseToken(token);
 
+            // Reject tokens that have been revoked (logout deletes the Redis key),
+            // even though their signature is still valid until natural expiry.
+            if (Boolean.FALSE.equals(redisTemplate.hasKey("token:" + token))) {
+                log.warn("Rejected revoked JWT on [{}]", request.getRequestURI());
+                writeUnauthorized(response);
+                return;
+            }
+
             // Build a minimal Authentication object and store it in the context
             UsernamePasswordAuthenticationToken auth =
                     new UsernamePasswordAuthenticationToken(username, null, Collections.emptyList());
@@ -69,12 +81,16 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         } catch (Exception e) {
             // Token present but invalid (expired, tampered, wrong signature)
             log.warn("Rejected invalid JWT on [{}]: {}", request.getRequestURI(), e.getMessage());
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            response.setContentType("application/json");
-            response.getWriter().write("{\"error\":\"Invalid or expired token\"}");
+            writeUnauthorized(response);
             return;
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    private void writeUnauthorized(HttpServletResponse response) throws IOException {
+        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        response.setContentType("application/json");
+        response.getWriter().write("{\"error\":\"Invalid or expired token\"}");
     }
 }
