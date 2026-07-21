@@ -1,7 +1,7 @@
 package com.chatroom.kafka;
 
+import com.chatroom.redis.RedisRoutingService;
 import com.chatroom.service.RedisMessageService;
-import com.chatroom.ws.Hub;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.internals.RecordHeader;
@@ -20,23 +20,25 @@ import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for ChatMessageConsumer.
- * Verifies the skip-self logic and Redis/Hub dispatch.
+ * Under the shared-consumer-group design, this instance may receive a message that
+ * was originally produced by any ws-server instance (not just itself), because Kafka's
+ * partition assignment — not the producing server's identity — decides who processes it.
+ * The consumer's only job is: save to Redis, then hand off routing to RedisRoutingService.
  */
 @ExtendWith(MockitoExtension.class)
 class ChatMessageConsumerTest {
 
-    @Mock Hub hub;
     @Mock RedisMessageService redisService;
+    @Mock RedisRoutingService routingService;
 
     ChatMessageConsumer consumer;
     ObjectMapper objectMapper = new ObjectMapper();
 
-    private static final String SERVER_ID = "ws-java-1";
     private static final String OTHER_SERVER = "ws-java-2";
 
     @BeforeEach
     void setup() {
-        consumer = new ChatMessageConsumer(hub, redisService, SERVER_ID, objectMapper);
+        consumer = new ChatMessageConsumer(redisService, routingService, objectMapper);
     }
 
     private ConsumerRecord<String, String> makeRecord(String roomId, String sentAt,
@@ -54,31 +56,20 @@ class ChatMessageConsumerTest {
     }
 
     @Test
-    void consume_fromOtherServer_savesToRedisAndBroadcasts() {
+    void consume_savesToRedisAndDispatchesWithSenderId() {
         var record = makeRecord("room-1", "2024-01-01T10:00:00Z", OTHER_SERVER);
         consumer.consume(record);
 
         verify(redisService).saveMessage(eq("room-1"), eq("2024-01-01T10:00:00Z"), anyString());
-        verify(hub).broadcast(eq("room-1"), anyString());
+        verify(routingService).dispatch(eq("room-1"), anyString(), eq(OTHER_SERVER));
     }
 
     @Test
-    void consume_fromSameServer_savesToRedisButSkipsBroadcast() {
-        var record = makeRecord("room-1", "2024-01-01T10:00:00Z", SERVER_ID);
-        consumer.consume(record);
-
-        // Redis write still happens (dedup handles double-write protection)
-        verify(redisService).saveMessage(eq("room-1"), eq("2024-01-01T10:00:00Z"), anyString());
-        // But hub broadcast should be skipped — already done locally when the message was sent
-        verify(hub, never()).broadcast(anyString(), anyString());
-    }
-
-    @Test
-    void consume_missingServerIdHeader_broadcastsAnyway() {
+    void consume_missingServerIdHeader_dispatchesWithEmptySenderId() {
         var record = makeRecord("room-1", "2024-01-01T10:00:00Z", null);
         consumer.consume(record);
 
-        verify(hub).broadcast(eq("room-1"), anyString());
+        verify(routingService).dispatch(eq("room-1"), anyString(), eq(""));
     }
 
     @Test
@@ -92,7 +83,7 @@ class ChatMessageConsumerTest {
         // Should log error and return without throwing
         consumer.consume(record);
 
-        verifyNoInteractions(hub, redisService);
+        verifyNoInteractions(routingService, redisService);
     }
 
     @Test
@@ -106,6 +97,6 @@ class ChatMessageConsumerTest {
 
         consumer.consume(record);
 
-        verifyNoInteractions(hub, redisService);
+        verifyNoInteractions(routingService, redisService);
     }
 }

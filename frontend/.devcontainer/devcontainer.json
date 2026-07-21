@@ -1,0 +1,21 @@
+{
+    "name": "Vue3 Docker Dev",
+    "build": {
+      "dockerfile": "Dockerfile"
+    },
+    "workspaceFolder": "/app",
+    "mounts": [
+      "source=${localWorkspaceFolder},target=/app,type=bind"
+    ],
+    "customizations": {
+      "vscode": {
+        "settings": {
+          "terminal.integrated.defaultProfile.linux": "bash"
+        }
+      }
+    },
+    "postCreateCommand": "pnpm install || npm install",
+    "forwardPorts": [5173]
+  }
+  
+  

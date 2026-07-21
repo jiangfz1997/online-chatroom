@@ -1,5 +1,6 @@
 package com.chatroom.ws;
 
+import com.chatroom.redis.RoomOccupancyListener;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -8,6 +9,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.Collection;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -23,27 +25,59 @@ public class Hub {
     private final ConcurrentHashMap<String, ConcurrentHashMap<String, ClientSession>> rooms =
             new ConcurrentHashMap<>();
 
+    private final RoomOccupancyListener occupancyListener;
+
     @Getter
     @Setter
     @Value("${server.id}")
     private String serverId;
 
+    public Hub(RoomOccupancyListener occupancyListener) {
+        this.occupancyListener = occupancyListener;
+    }
+
     public void joinRoom(String roomId, ClientSession client) {
-        rooms.computeIfAbsent(roomId, k -> new ConcurrentHashMap<>())
-             .put(client.getSessionId(), client);
+        // Detect the empty→occupied transition atomically with the membership write,
+        // so a concurrent leaveRoom() can't observe a stale "empty" state and fire
+        // onRoomVacated() for a room that actually just gained a member.
+        boolean[] wasNewRoom = new boolean[1];
+        rooms.compute(roomId, (k, r) -> {
+            if (r == null) {
+                wasNewRoom[0] = true;
+                r = new ConcurrentHashMap<>();
+            }
+            r.put(client.getSessionId(), client);
+            return r;
+        });
         log.info("User [{}] entered room [{}]", client.getUsername(), roomId);
+        if (wasNewRoom[0]) {
+            occupancyListener.onRoomOccupied(roomId);
+        }
     }
 
     public void leaveRoom(String roomId, ClientSession client) {
-        ConcurrentHashMap<String, ClientSession> room = rooms.get(roomId);
-        if (room == null) {
+        boolean[] becameEmpty = new boolean[1];
+        rooms.computeIfPresent(roomId, (k, r) -> {
+            r.remove(client.getSessionId());
+            if (r.isEmpty()) {
+                becameEmpty[0] = true;
+                return null; // remove the room entry to prevent unbounded map growth
+            }
+            return r;
+        });
+        if (becameEmpty[0]) {
+            log.info("User [{}] left room [{}]", client.getUsername(), roomId);
+            occupancyListener.onRoomVacated(roomId);
+        } else if (!rooms.containsKey(roomId)) {
             log.warn("Cannot remove user [{}] from non-existent room [{}]", client.getUsername(), roomId);
-            return;
+        } else {
+            log.info("User [{}] left room [{}]", client.getUsername(), roomId);
         }
-        room.remove(client.getSessionId());
-        // Clean up empty rooms to prevent unbounded map growth
-        rooms.computeIfPresent(roomId, (k, r) -> r.isEmpty() ? null : r);
-        log.info("User [{}] left room [{}]", client.getUsername(), roomId);
+    }
+
+    /** Snapshot of room IDs this instance currently has local clients in. */
+    public Set<String> localRoomIds() {
+        return Set.copyOf(rooms.keySet());
     }
 
     /**

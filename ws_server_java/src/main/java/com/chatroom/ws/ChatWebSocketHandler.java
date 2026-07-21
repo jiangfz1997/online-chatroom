@@ -7,6 +7,7 @@ import com.chatroom.service.RedisMessageService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -57,22 +58,27 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-        String username = (String) session.getAttributes().get("username");
-        String roomId   = (String) session.getAttributes().get("roomId");
+        MDC.put("connId", session.getId());
+        try {
+            String username = (String) session.getAttributes().get("username");
+            String roomId   = (String) session.getAttributes().get("roomId");
 
-        ClientSession client = new ClientSession(session, username, roomId);
-        client.start();
-        sessions.put(session.getId(), client);
-        hub.joinRoom(roomId, client);
+            ClientSession client = new ClientSession(session, username, roomId);
+            client.start();
+            sessions.put(session.getId(), client);
+            hub.joinRoom(roomId, client);
 
-        log.info("User [{}] connected to room [{}]", username, roomId);
+            log.info("User [{}] connected to room [{}]", username, roomId);
 
-        // Push recent messages from Redis (newest-first list, send oldest first like Go)
-        List<String> recent = redisService.getRecentMessages(roomId);
-        for (int i = recent.size() - 1; i >= 0; i--) {
-            client.send(recent.get(i));
+            // Push recent messages from Redis (newest-first list, send oldest first like Go)
+            List<String> recent = redisService.getRecentMessages(roomId);
+            for (int i = recent.size() - 1; i >= 0; i--) {
+                client.send(recent.get(i));
+            }
+            log.info("Sent {} recent messages to user [{}]", recent.size(), username);
+        } finally {
+            MDC.remove("connId");
         }
-        log.info("Sent {} recent messages to user [{}]", recent.size(), username);
     }
 
     /**
@@ -81,39 +87,54 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
-        ClientSession client = sessions.get(session.getId());
-        if (client == null) return;
-
-        String json = message.getPayload();
-        log.debug("Received from user [{}]: {}", client.getUsername(), json);
-
+        MDC.put("connId", session.getId());
         try {
-            JsonNode base = objectMapper.readTree(json);
-            String type = base.path("type").asText("");
+            ClientSession client = sessions.get(session.getId());
+            if (client == null) return;
 
-            switch (type) {
-                case "message"       -> handleBroadcastMessage(client, base);
-                case "fetch_history" -> handleFetchHistory(client, base);
-                default              -> log.warn("Unknown message type [{}] from user [{}]", type, client.getUsername());
+            String json = message.getPayload();
+            log.debug("Received from user [{}]: {}", client.getUsername(), json);
+
+            try {
+                JsonNode base = objectMapper.readTree(json);
+                String type = base.path("type").asText("");
+
+                switch (type) {
+                    case "message"       -> handleBroadcastMessage(client, base);
+                    case "fetch_history" -> handleFetchHistory(client, base);
+                    default              -> log.warn("Unknown message type [{}] from user [{}]", type, client.getUsername());
+                }
+            } catch (Exception e) {
+                log.error("Failed to parse message from user [{}]: {}", client.getUsername(), e.getMessage());
             }
-        } catch (Exception e) {
-            log.error("Failed to parse message from user [{}]: {}", client.getUsername(), e.getMessage());
+        } finally {
+            MDC.remove("connId");
         }
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        ClientSession client = sessions.remove(session.getId());
-        if (client == null) return;
+        MDC.put("connId", session.getId());
+        try {
+            ClientSession client = sessions.remove(session.getId());
+            if (client == null) return;
 
-        hub.leaveRoom(client.getRoomId(), client);
-        client.shutdown();
-        log.info("User [{}] disconnected from room [{}], status={}", client.getUsername(), client.getRoomId(), status);
+            hub.leaveRoom(client.getRoomId(), client);
+            client.shutdown();
+            log.info("User [{}] disconnected from room [{}], status={}", client.getUsername(), client.getRoomId(), status);
+        } finally {
+            MDC.remove("connId");
+        }
     }
 
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
-        log.warn("Transport error for session [{}]: {}", session.getId(), exception.getMessage());
+        MDC.put("connId", session.getId());
+        try {
+            log.warn("Transport error for session [{}]: {}", session.getId(), exception.getMessage());
+        } finally {
+            MDC.remove("connId");
+        }
     }
 
     // Allows concurrent sessions (default is false in some Spring versions)

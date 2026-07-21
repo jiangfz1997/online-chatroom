@@ -17,6 +17,12 @@ target/
 test_out.txt
 test_output.txt
 
+# Node
+node_modules/
+dist/
+.pnpm-store/
+.vite/
+
 # Claude local settings
 .claude/settings.local.json
 archive/go/k3s-online/aws-credentials.yaml

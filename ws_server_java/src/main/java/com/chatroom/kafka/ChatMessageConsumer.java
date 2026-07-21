@@ -1,7 +1,7 @@
 package com.chatroom.kafka;
 
+import com.chatroom.redis.RedisRoutingService;
 import com.chatroom.service.RedisMessageService;
-import com.chatroom.ws.Hub;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -14,37 +14,32 @@ import org.springframework.stereotype.Component;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Consumes chat messages from Kafka and dispatches them to local WebSocket clients.
+ * Consumes chat messages from Kafka and routes them to the ws-server instances that
+ * actually have local clients in the target room.
  *
- * Each ws-server instance uses its own Kafka consumer group (groupId = server.id),
- * so ALL instances receive ALL messages independently — same approach as the Go version.
- *
- * Logic (mirrors Go Hub.BroadcastFromKafka):
- *  1. Extract serverID header from the Kafka record
- *  2. Save to Redis (dedup prevents double-write across servers)
- *  3. If senderServerID == this server's ID → skip broadcast (already done locally in handleBroadcastMessage)
- *  4. Otherwise → broadcast to local clients in that room
+ * All ws-server instances share a single Kafka consumer group (groupId = kafka.group.id),
+ * so Kafka's normal partition assignment spreads message processing across instances
+ * instead of fanning every message out to every instance. Whichever instance ends up
+ * owning the partition for a message queries the Redis routing table and forwards it
+ * via Redis Pub/Sub only to the instances that need it.
  */
 @Slf4j
 @Component
 public class ChatMessageConsumer {
 
-    private final Hub hub;
     private final RedisMessageService redisService;
-    private final String serverId;
+    private final RedisRoutingService routingService;
     private final ObjectMapper objectMapper;
 
-    public ChatMessageConsumer(Hub hub,
-                               RedisMessageService redisService,
-                               @Value("${server.id}") String serverId,
+    public ChatMessageConsumer(RedisMessageService redisService,
+                               RedisRoutingService routingService,
                                ObjectMapper objectMapper) {
-        this.hub = hub;
         this.redisService = redisService;
-        this.serverId = serverId;
+        this.routingService = routingService;
         this.objectMapper = objectMapper;
     }
 
-    @KafkaListener(topics = "${kafka.topic}", groupId = "${server.id}")
+    @KafkaListener(topics = "${kafka.topic}", groupId = "${kafka.group.id}")
     public void consume(ConsumerRecord<String, String> record) {
         log.debug("Kafka message received: topic={} partition={} offset={}",
                 record.topic(), record.partition(), record.offset());
@@ -80,12 +75,9 @@ public class ChatMessageConsumer {
         // Save to Redis (dedup Set ensures only one server stores per message)
         redisService.saveMessage(roomId, timestamp, json);
 
-        // Skip local broadcast if we produced this message — already broadcast in handleBroadcastMessage
-        if (serverId.equals(senderServerId)) {
-            log.debug("Message originated from this server [{}], skipping re-broadcast", serverId);
-            return;
-        }
-
-        hub.broadcast(roomId, json);
+        // Route to only the instances that have local clients in this room.
+        // The sender is excluded inside dispatch() — it already broadcast locally
+        // in handleBroadcastMessage before this message reached Kafka.
+        routingService.dispatch(roomId, json, senderServerId);
     }
 }
