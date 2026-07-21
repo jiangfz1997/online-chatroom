@@ -61,6 +61,9 @@
               <span class="chat-title">{{ selectedRoom.name }}</span>
               <span class="chat-sub">{{ selectedRoom.isPrivate ? 'Private room' : 'Public room' }}</span>
             </div>
+            <button class="icon-btn" @click="showRoomInfo = true" title="Room info">
+              <BaseIcon name="info" :size="18" />
+            </button>
           </div>
 
           <div class="messages" ref="messageContainer">
@@ -182,6 +185,15 @@
     >
       <li @click="handleExitClick">Leave room</li>
     </ul>
+
+    <!-- Room info drawer -->
+    <Transition name="drawer">
+      <RoomInfoPanel
+        v-if="showRoomInfo && selectedRoom"
+        :room-id="selectedRoom.id"
+        @close="showRoomInfo = false"
+      />
+    </Transition>
   </div>
 </template>
 
@@ -192,6 +204,7 @@ import { useRoute, useRouter } from 'vue-router'
 import api from '@/utils/http'
 import Avatar from '@/components/Avatar.vue'
 import BaseIcon from '@/components/BaseIcon.vue'
+import RoomInfoPanel from '@/components/RoomInfoPanel.vue'
 import { toast } from '@/composables/useToast'
 
 const route = useRoute()
@@ -405,6 +418,7 @@ const sockets = ref<Record<string, WebSocket>>({})
 const chatrooms = ref<{ id: string; name: string; isPrivate: boolean; unread: number }[]>([])
 
 const selectedRoom = ref<null | typeof chatrooms.value[0]>(null)
+const showRoomInfo = ref(false)
 const newMessage = ref('')
 const messageMap = ref<Record<string, { sender: string; text: string; timestamp?: string }[]>>({})
 const messages = computed(() =>
@@ -1100,5 +1114,17 @@ const confirmExitChatroom = async () => {
   .msg-row {
     max-width: 90%;
   }
+}
+</style>
+
+<!-- non-scoped: transition classes must reach the RoomInfoPanel root element -->
+<style>
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: opacity 0.2s ease;
+}
+.drawer-enter-from,
+.drawer-leave-to {
+  opacity: 0;
 }
 </style>
