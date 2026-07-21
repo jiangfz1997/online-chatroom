@@ -1,7 +1,9 @@
 <template>
   <router-view />
+  <BackendOfflineNotice />
 </template>
 <script setup lang="ts">
+import BackendOfflineNotice from '@/components/BackendOfflineNotice.vue'
 </script>
 <!-- <script setup lang="ts">
 import HelloWorld from './components/HelloWorld.vue'
