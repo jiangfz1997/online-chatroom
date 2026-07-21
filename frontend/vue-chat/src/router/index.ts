@@ -5,6 +5,7 @@ import Home from '@/views/Home.vue'
 import Login from '@/views/Login.vue'
 import Register from '@/views/Register.vue'
 import Chatroom from '@/views/Chatroom.vue'
+import Profile from '@/views/Profile.vue'
 
 
 const routes = [
@@ -23,8 +24,8 @@ const routes = [
     path: '/chatroom/:roomId?',
     name: 'Chatroom',
     component: Chatroom
-  }
-  
+  },
+  { path: '/profile', name: 'Profile', component: Profile }
 ]
 
 const router = createRouter({
