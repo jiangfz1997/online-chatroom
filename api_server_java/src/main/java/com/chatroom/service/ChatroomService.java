@@ -1,9 +1,12 @@
 package com.chatroom.service;
 
 import com.chatroom.dto.CreateChatroomRequest;
+import com.chatroom.exception.ForbiddenException;
 import com.chatroom.exception.NotFoundException;
 import com.chatroom.model.Chatroom;
+import com.chatroom.model.User;
 import com.chatroom.repository.ChatroomRepository;
+import com.chatroom.repository.UserRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -17,9 +20,11 @@ import java.util.UUID;
 public class ChatroomService {
 
     private final ChatroomRepository chatroomRepository;
+    private final UserRepository userRepository;
 
-    public ChatroomService(ChatroomRepository chatroomRepository) {
+    public ChatroomService(ChatroomRepository chatroomRepository, UserRepository userRepository) {
         this.chatroomRepository = chatroomRepository;
+        this.userRepository = userRepository;
     }
 
     /**
@@ -27,14 +32,15 @@ public class ChatroomService {
      * The creator is automatically added as the first member.
      */
     public Chatroom createChatroom(String createdBy, CreateChatroomRequest req) {
-        Chatroom chatroom = new Chatroom(
-                UUID.randomUUID().toString(),
-                req.getName(),
-                req.isPrivate(),
-                createdBy,
-                Instant.now().toString(),
-                new ArrayList<>(List.of(createdBy))
-        );
+        Chatroom chatroom = Chatroom.builder()
+                .roomId(UUID.randomUUID().toString())
+                .roomName(req.getName())
+                .description(req.getDescription())
+                .isPrivate(req.isPrivate())
+                .createdBy(createdBy)
+                .createdAt(Instant.now().toString())
+                .members(new ArrayList<>(List.of(createdBy)))
+                .build();
 
         chatroomRepository.createChatroom(chatroom);
         log.info("Chatroom created: room=[{}] by=[{}]", chatroom.getRoomId(), createdBy);
@@ -45,6 +51,7 @@ public class ChatroomService {
      * Adds a user to an existing chatroom.
      * Throws NotFoundException if the chatroom does not exist.
      * Throws IllegalArgumentException if the user is already a member.
+     * Throws ForbiddenException if the room is private (private rooms are join-by-invite).
      */
     public void joinChatroom(String username, String roomId) {
         Chatroom chatroom = chatroomRepository.findByRoomId(roomId)
@@ -54,8 +61,32 @@ public class ChatroomService {
             throw new IllegalArgumentException("User already in chatroom");
         }
 
+        if (chatroom.isPrivate()) {
+            throw new ForbiddenException("This chatroom is private");
+        }
+
         chatroomRepository.addUserToRoom(roomId, username);
         log.info("User joined chatroom: room=[{}] user=[{}]", roomId, username);
+    }
+
+    /**
+     * Adds a member to a chatroom on the creator's behalf (invite). This is the
+     * only way to grow a private room's membership.
+     * Throws ForbiddenException if the caller is not the room's creator.
+     */
+    public void addMember(String requester, String roomId, String targetUsername) {
+        Chatroom chatroom = chatroomRepository.findByRoomId(roomId)
+                .orElseThrow(() -> new NotFoundException("Chatroom not found"));
+
+        if (!chatroom.getCreatedBy().equals(requester)) {
+            throw new ForbiddenException("Only the room creator can add members");
+        }
+        if (chatroom.getMembers().contains(targetUsername)) {
+            throw new IllegalArgumentException("User already in chatroom");
+        }
+
+        chatroomRepository.addUserToRoom(roomId, targetUsername);
+        log.info("Member added: room=[{}] user=[{}] by=[{}]", roomId, targetUsername, requester);
     }
 
     /**
@@ -76,11 +107,26 @@ public class ChatroomService {
     }
 
     /**
-     * Returns a single chatroom by ID.
-     * Throws NotFoundException if the chatroom does not exist.
+     * Returns a single chatroom by ID for the given requester.
+     * Private rooms are hidden from non-members: they get a 404 (not a 403) so a
+     * search can't even confirm a private room exists.
      */
-    public Chatroom getChatroomByRoomId(String roomId) {
-        return chatroomRepository.findByRoomId(roomId)
+    public Chatroom getChatroomByRoomId(String roomId, String requester) {
+        Chatroom chatroom = chatroomRepository.findByRoomId(roomId)
                 .orElseThrow(() -> new NotFoundException("Chatroom not found"));
+
+        if (chatroom.isPrivate() && !chatroom.getMembers().contains(requester)) {
+            throw new NotFoundException("Chatroom not found");
+        }
+        return chatroom;
+    }
+
+    /**
+     * Returns the member profiles (username / displayName / avatarSeed) of a room
+     * the requester belongs to. Non-members of a private room get a 404.
+     */
+    public List<User> getMembers(String roomId, String requester) {
+        Chatroom chatroom = getChatroomByRoomId(roomId, requester);
+        return userRepository.findProfiles(chatroom.getMembers());
     }
 }

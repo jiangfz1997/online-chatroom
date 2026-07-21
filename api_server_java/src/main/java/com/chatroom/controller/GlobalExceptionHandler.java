@@ -1,5 +1,6 @@
 package com.chatroom.controller;
 
+import com.chatroom.exception.ForbiddenException;
 import com.chatroom.exception.NotFoundException;
 import com.chatroom.exception.UnauthorizedException;
 import lombok.extern.slf4j.Slf4j;
@@ -66,5 +67,15 @@ public class GlobalExceptionHandler {
     public ResponseEntity<?> handleNotFound(NotFoundException e) {
         log.warn("Not found: {}", e.getMessage());
         return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
+    }
+
+    /**
+     * Handles authorization failures such as joining a private room without an invite.
+     * Returns 403 Forbidden.
+     */
+    @ExceptionHandler(ForbiddenException.class)
+    public ResponseEntity<?> handleForbidden(ForbiddenException e) {
+        log.warn("Forbidden: {}", e.getMessage());
+        return ResponseEntity.status(403).body(Map.of("error", e.getMessage()));
     }
 }

@@ -10,6 +10,8 @@ public class CreateChatroomRequest {
     @NotBlank(message = "name is required")
     private String name;
 
+    private String description;
+
     @JsonProperty("is_private")
     private boolean isPrivate;
 }

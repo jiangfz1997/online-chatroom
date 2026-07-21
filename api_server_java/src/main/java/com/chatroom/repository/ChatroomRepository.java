@@ -1,6 +1,7 @@
 package com.chatroom.repository;
 
 import com.chatroom.model.Chatroom;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
@@ -8,6 +9,7 @@ import software.amazon.awssdk.services.dynamodb.model.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Repository
 public class ChatroomRepository {
 
@@ -25,11 +27,13 @@ public class ChatroomRepository {
      * Throws ConditionalCheckFailedException if roomId already exists.
      */
     public void createChatroom(Chatroom chatroom) {
+        long t0 = System.nanoTime();
         dynamoDbClient.putItem(PutItemRequest.builder()
                 .tableName(TABLE_CHATROOMS)
                 .item(toAttributeMap(chatroom))
                 .conditionExpression("attribute_not_exists(roomId)")
                 .build());
+        log.debug("DynamoDB putItem Chatrooms[{}] took {} ms", chatroom.getRoomId(), elapsedMs(t0));
 
         // Record creator in the reverse index so they see this room in their list
         addRoomToUserIndex(chatroom.getCreatedBy(), chatroom.getRoomId());
@@ -37,10 +41,13 @@ public class ChatroomRepository {
 
     /** Returns the chatroom, or empty if not found. */
     public Optional<Chatroom> findByRoomId(String roomId) {
+        long t0 = System.nanoTime();
         GetItemResponse response = dynamoDbClient.getItem(GetItemRequest.builder()
                 .tableName(TABLE_CHATROOMS)
                 .key(Map.of("roomId", AttributeValue.fromS(roomId)))
                 .build());
+        log.debug("DynamoDB getItem Chatrooms[{}] took {} ms (found={})",
+                roomId, elapsedMs(t0), response.hasItem());
 
         if (!response.hasItem() || response.item().isEmpty()) {
             return Optional.empty();
@@ -53,6 +60,7 @@ public class ChatroomRepository {
      * Uses list_append so concurrent joins don't overwrite each other.
      */
     public void addUserToRoom(String roomId, String username) {
+        long t0 = System.nanoTime();
         dynamoDbClient.updateItem(UpdateItemRequest.builder()
                 .tableName(TABLE_CHATROOMS)
                 .key(Map.of("roomId", AttributeValue.fromS(roomId)))
@@ -62,6 +70,7 @@ public class ChatroomRepository {
                         ":empty",   AttributeValue.fromL(Collections.emptyList())
                 ))
                 .build());
+        log.debug("DynamoDB updateItem Chatrooms[{}] addUser took {} ms", roomId, elapsedMs(t0));
 
         addRoomToUserIndex(username, roomId);
     }
@@ -82,10 +91,12 @@ public class ChatroomRepository {
                 .collect(Collectors.toList());
         chatroom.setMembers(updated);
 
+        long t0 = System.nanoTime();
         dynamoDbClient.putItem(PutItemRequest.builder()
                 .tableName(TABLE_CHATROOMS)
                 .item(toAttributeMap(chatroom))
                 .build());
+        log.debug("DynamoDB putItem Chatrooms[{}] removeUser took {} ms", roomId, elapsedMs(t0));
 
         removeRoomFromUserIndex(username, roomId);
     }
@@ -116,12 +127,15 @@ public class ChatroomRepository {
                 .map(id -> Map.of("roomId", AttributeValue.fromS(id)))
                 .collect(Collectors.toList());
 
+        long t0 = System.nanoTime();
         BatchGetItemResponse batchResponse = dynamoDbClient.batchGetItem(
                 BatchGetItemRequest.builder()
                         .requestItems(Map.of(
                                 TABLE_CHATROOMS, KeysAndAttributes.builder().keys(keys).build()
                         ))
                         .build());
+        log.debug("DynamoDB batchGetItem Chatrooms x{} for user[{}] took {} ms",
+                keys.size(), username, elapsedMs(t0));
 
         return batchResponse.responses()
                 .getOrDefault(TABLE_CHATROOMS, Collections.emptyList())
@@ -171,14 +185,17 @@ public class ChatroomRepository {
                         .map(AttributeValue::fromS)
                         .collect(Collectors.toList());
 
-        return Map.of(
-                "roomId",    AttributeValue.fromS(c.getRoomId()),
-                "roomName",  AttributeValue.fromS(c.getRoomName()),
-                "isPrivate", AttributeValue.fromBool(c.isPrivate()),
-                "createdBy", AttributeValue.fromS(c.getCreatedBy()),
-                "createdAt", AttributeValue.fromS(c.getCreatedAt()),
-                "members",   AttributeValue.fromL(memberAttrs)
-        );
+        Map<String, AttributeValue> item = new HashMap<>();
+        item.put("roomId",    AttributeValue.fromS(c.getRoomId()));
+        item.put("roomName",  AttributeValue.fromS(c.getRoomName()));
+        item.put("isPrivate", AttributeValue.fromBool(c.isPrivate()));
+        item.put("createdBy", AttributeValue.fromS(c.getCreatedBy()));
+        item.put("createdAt", AttributeValue.fromS(c.getCreatedAt()));
+        item.put("members",   AttributeValue.fromL(memberAttrs));
+        if (c.getDescription() != null && !c.getDescription().isEmpty()) {
+            item.put("description", AttributeValue.fromS(c.getDescription()));
+        }
+        return item;
     }
 
     private Chatroom fromAttributeMap(Map<String, AttributeValue> item) {
@@ -188,13 +205,18 @@ public class ChatroomRepository {
                         .collect(Collectors.toList())
                 : Collections.emptyList();
 
-        return new Chatroom(
-                item.get("roomId").s(),
-                item.get("roomName").s(),
-                item.containsKey("isPrivate") && item.get("isPrivate").bool(),
-                item.get("createdBy").s(),
-                item.get("createdAt").s(),
-                members
-        );
+        return Chatroom.builder()
+                .roomId(item.get("roomId").s())
+                .roomName(item.get("roomName").s())
+                .description(item.containsKey("description") ? item.get("description").s() : null)
+                .isPrivate(item.containsKey("isPrivate") && item.get("isPrivate").bool())
+                .createdBy(item.get("createdBy").s())
+                .createdAt(item.get("createdAt").s())
+                .members(members)
+                .build();
+    }
+
+    private static long elapsedMs(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000;
     }
 }
