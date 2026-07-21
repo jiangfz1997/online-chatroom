@@ -165,9 +165,12 @@
 
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 //import axios from 'axios'
 import api from '@/utils/http'
+const route = useRoute()
+const router = useRouter()
 const apiBase = import.meta.env.VITE_API_BASE_URL || '';
 const base_wsUrl = import.meta.env.VITE_WS_BASE_URL || `${location.origin.replace(/^http/, 'ws')}/ws`
 // const socketMap: Record<string, WebSocket> = {}
@@ -248,9 +251,35 @@ onMounted(async () => {
       messageMap.value[roomId] = []
       connectWebSocket(roomId)
     })
+
+    // Restore the active room from the URL now that the sidebar list is loaded
+    // (e.g. after a page refresh, or opening a shared /chatroom/:roomId link).
+    syncSelectedRoomFromRoute()
   } catch (err) {
     console.error('Load chatroom failed:', err)
   }
+})
+
+// Keep `selectedRoom` in sync with the URL: handles refresh, shared links,
+// and browser back/forward between rooms.
+const syncSelectedRoomFromRoute = () => {
+  const urlRoomId = route.params.roomId as string | undefined
+  if (!urlRoomId) {
+    selectedRoom.value = null
+    return
+  }
+  const match = chatrooms.value.find(room => room.id === urlRoomId)
+  if (match) {
+    activateRoom(match)
+  } else {
+    // Not a room the user has joined (unknown/invalid id) — drop the stale param
+    // rather than silently showing nothing tied to a URL that looks valid.
+    router.replace('/chatroom')
+  }
+}
+
+watch(() => route.params.roomId, () => {
+  syncSelectedRoomFromRoute()
 })
 
 
@@ -320,9 +349,18 @@ const messages = computed(() =>
 
 // Establish WebSocket connection
 
-const connectWebSocket = async (roomId: string) => {
-    if (sockets.value[roomId]) return;
+// Rooms currently mid-connect. Marked synchronously (before the first await)
+// so a second concurrent call for the same room bails out immediately instead
+// of racing past the `sockets.value[roomId]` check and opening a duplicate
+// socket (which caused messages to appear twice — both sockets receive the
+// server's broadcast and each pushes into the same messageMap).
+const connectingRooms = new Set<string>()
 
+const connectWebSocket = async (roomId: string) => {
+    if (sockets.value[roomId] || connectingRooms.has(roomId)) return;
+    connectingRooms.add(roomId);
+
+    try {
     const res = await api.get(`${apiBase}/chatrooms/${roomId}/enter`, {
         params: { username }
     });
@@ -402,10 +440,14 @@ const connectWebSocket = async (roomId: string) => {
         console.log('WebSocket closed');
         delete sockets.value[roomId];
     };
+    } finally {
+        connectingRooms.delete(roomId);
+    }
 };
 
-// select room
-const selectRoom = async (room: typeof chatrooms.value[0]) => {
+// activate a room in the UI (connect socket, reset unread, scroll) — does NOT
+// touch the URL, so it's safe to call when syncing from a route change too.
+const activateRoom = async (room: typeof chatrooms.value[0]) => {
   console.log('select room:', room)
 
   selectedRoom.value = room
@@ -423,6 +465,15 @@ const selectRoom = async (room: typeof chatrooms.value[0]) => {
   }
   // loadHistory(room.id) //load history
   scrollToBottom()
+}
+
+// select room — called from user interaction (sidebar click, join, create).
+// Updates the URL so refresh/back-forward/shared links restore the room.
+const selectRoom = (room: typeof chatrooms.value[0]) => {
+  if (route.params.roomId !== room.id) {
+    router.push(`/chatroom/${room.id}`)
+  }
+  activateRoom(room)
 }
 
 // send message
@@ -487,8 +538,7 @@ const createRoomConfirm = async () => {
     addChatroomToSidebar(newRoom)
     messageMap.value[roomId] = []
     // select this chatroom
-    selectedRoom.value = newRoom
-    connectWebSocket(newRoom.id)
+    selectRoom(newRoom)
 
   } catch (error) {
     createSuccessMessage.value = 'Creation failed. Please try again later.'
@@ -643,9 +693,10 @@ const confirmExitChatroom = async () => {
     // delete messagemap
     delete messageMap.value[exitRoomToConfirm.value.id]
 
-    // If it's the currently selected chatroom, deselect it
+    // If it's the currently selected chatroom, deselect it and clear the URL
     if (selectedRoom.value?.id === exitRoomToConfirm.value.id) {
       selectedRoom.value = null
+      router.push('/chatroom')
     }
 
     // close popup
