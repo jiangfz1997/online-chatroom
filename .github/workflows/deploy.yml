@@ -71,6 +71,27 @@ jobs:
         username: ec2-user
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
+          # Install/refresh the ECR pull-secret refresher on the host (idempotent).
+          # ECR login tokens expire after 12h; this keeps the imagePullSecret fresh.
+          # Uses the EC2 instance role (no keys). Reinstalling each deploy self-heals
+          # a rebuilt host; the cron covers the gaps between deploys.
+          sudo tee /usr/local/bin/refresh-ecr-secret.sh >/dev/null <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          REGION=us-east-1
+          REGISTRY=492832370104.dkr.ecr.us-east-1.amazonaws.com
+          TOKEN=$(aws ecr get-login-password --region "$REGION")
+          kubectl delete secret ecr-secret --ignore-not-found
+          kubectl create secret docker-registry ecr-secret \
+            --docker-server="$REGISTRY" --docker-username=AWS --docker-password="$TOKEN"
+          SH
+          sudo chmod +x /usr/local/bin/refresh-ecr-secret.sh
+          echo '0 */8 * * * root /usr/local/bin/refresh-ecr-secret.sh >>/var/log/ecr-refresh.log 2>&1' | sudo tee /etc/cron.d/ecr-refresh >/dev/null
+
+          # Refresh now so the rollout below pulls with a valid token.
+          sudo /usr/local/bin/refresh-ecr-secret.sh
+
           sudo kubectl rollout restart deployment/api-server
           sudo kubectl rollout restart deployment/ws-server
           sudo kubectl rollout restart deployment/persist-worker
