@@ -20,7 +20,7 @@ const routes = [
     component: Register
   },
   {
-    path: '/chatroom',
+    path: '/chatroom/:roomId?',
     name: 'Chatroom',
     component: Chatroom
   }
