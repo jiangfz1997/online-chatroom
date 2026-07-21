@@ -13,8 +13,8 @@ spec:
         app: ws-server
     spec:
       terminationGracePeriodSeconds: 30
-      imagePullSecrets:
-      - name: ecr-secret
+      # ECR auth via node kubelet credential provider — no imagePullSecret needed.
+      # See k3s-cloud/ECR-CREDENTIAL-PROVIDER.md.
       containers:
       - name: ws-server
         image: 492832370104.dkr.ecr.us-east-1.amazonaws.com/chatroom-ws-server:latest

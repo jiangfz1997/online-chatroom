@@ -12,8 +12,8 @@ spec:
       labels:
         app: persist-worker
     spec:
-      imagePullSecrets:
-      - name: ecr-secret
+      # ECR auth via node kubelet credential provider — no imagePullSecret needed.
+      # See k3s-cloud/ECR-CREDENTIAL-PROVIDER.md.
       containers:
       - name: persist-worker
         image: 492832370104.dkr.ecr.us-east-1.amazonaws.com/chatroom-persist-worker:latest

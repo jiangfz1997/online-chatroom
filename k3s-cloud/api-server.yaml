@@ -12,8 +12,9 @@ spec:
       labels:
         app: api-server
     spec:
-      imagePullSecrets:
-      - name: ecr-secret
+      # ECR auth comes from the node's kubelet image credential provider
+      # (EC2 instance role + ecr-credential-provider) — no imagePullSecret needed.
+      # See k3s-cloud/ECR-CREDENTIAL-PROVIDER.md.
       containers:
       - name: api-server
         image: 492832370104.dkr.ecr.us-east-1.amazonaws.com/chatroom-api-server:latest
