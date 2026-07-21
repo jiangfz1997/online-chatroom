@@ -1,165 +1,199 @@
 <template>
-  <div class="chatroom-container">
+  <div class="chatroom">
     <!-- Top bar -->
-    <div class="top-bar">
-      <input
-        v-model="searchRoomId"
-        @keyup.enter="handleSearchRoom"
-        type="text"
-        class="search-input"
-        placeholder="Search for a chatroom (type chatroom ID and hit enter)..."
-      />
-      <div class="user-info">
-        <span class="username">{{ username }}</span>
-        <button class="logout-button" @click="logout">Logout</button>
+    <header class="top-bar">
+      <div class="search">
+        <BaseIcon name="search" :size="16" />
+        <input
+          v-model="searchRoomId"
+          @keyup.enter="handleSearchRoom"
+          type="text"
+          placeholder="Find a room by ID and hit enter…"
+        />
       </div>
-    </div>
-
-    <!-- Main area -->
-    <div class="main-content">
-      <!-- Left-side chatroom list -->
-      <div class="sidebar">
-        <div
-          v-for="room in chatrooms"
-          :key="room.id"
-          class="chatroom-item"
-          :class="{ active: selectedRoom && selectedRoom.id === room.id }"
-          @click="selectRoom(room)"
-          @contextmenu.prevent="openContextMenu($event, room)"
-        >
-          <span class="room-name">{{ room.name }}</span>
-          <span class="room-type">{{ room.isPrivate ? 'Private' : 'Public' }}</span>
-          <span v-if="room.unread > 0" class="unread">{{ room.unread }}</span>
-
-        </div>
-        <div class="chatroom-item create-room" @click="showCreateModal = true">
-          + Create New Chatroom
-        </div>
+      <div class="user-area">
+        <button class="user-chip" @click="router.push('/profile')" title="Edit profile">
+          <Avatar :seed="me.avatarSeed" :name="me.displayName" :size="30" />
+          <span class="chip-name">{{ me.displayName }}</span>
+        </button>
+        <button class="icon-btn" @click="logout" title="Logout">
+          <BaseIcon name="logout" :size="18" />
+        </button>
       </div>
+    </header>
 
-      <!-- Right-side chat window -->
-      <div class="chat-window">
-        <div v-if="!selectedRoom" class="placeholder-text">
-          Select a chatroom to start chatting.
+    <div class="main">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-scroll">
+          <button
+            v-for="room in chatrooms"
+            :key="room.id"
+            class="room-item"
+            :class="{ active: selectedRoom && selectedRoom.id === room.id }"
+            @click="selectRoom(room)"
+            @contextmenu.prevent="openContextMenu($event, room)"
+          >
+            <Avatar :seed="room.id" :name="room.name" :size="38" />
+            <div class="room-meta">
+              <span class="room-name">{{ room.name }}</span>
+              <span class="room-type">{{ room.isPrivate ? 'Private' : 'Public' }}</span>
+            </div>
+            <span v-if="room.unread > 0" class="unread">{{ room.unread }}</span>
+          </button>
         </div>
-        <div v-else class="chat-content">
-          <h3>{{ selectedRoom.name }}</h3>
+        <button class="create-room btn btn-ghost" @click="showCreateModal = true">
+          <BaseIcon name="plus" :size="16" /> New room
+        </button>
+      </aside>
+
+      <!-- Chat window -->
+      <section class="chat">
+        <div v-if="!selectedRoom" class="empty">
+          <span class="empty-mark"><BaseIcon name="chat" :size="40" /></span>
+          <p>Select a room to start chatting.</p>
+        </div>
+
+        <template v-else>
+          <div class="chat-header">
+            <Avatar :seed="selectedRoom.id" :name="selectedRoom.name" :size="34" />
+            <div class="chat-header-meta">
+              <span class="chat-title">{{ selectedRoom.name }}</span>
+              <span class="chat-sub">{{ selectedRoom.isPrivate ? 'Private room' : 'Public room' }}</span>
+            </div>
+            <button class="icon-btn" @click="showRoomInfo = true" title="Room info">
+              <BaseIcon name="info" :size="18" />
+            </button>
+          </div>
+
           <div class="messages" ref="messageContainer">
             <div
               v-if="selectedRoom && !noMoreMessages[selectedRoom.id]"
               class="history-loader"
               @click="loadHistory(selectedRoom.id)"
             >
-              Review more history messages
+              Load older messages
             </div>
             <div
               v-else-if="selectedRoom && noMoreMessages[selectedRoom.id]"
               class="history-loader no-more"
             >
-              No more history messages
+              No more history
             </div>
 
-            <div
-              v-for="(msg, index) in messages"
-              :key="index"
-              :class="['message-container', msg.sender === username ? 'own' : 'other']"
-            >
-              <div class="sender">{{ msg.sender }}</div>
-              <div class="message-bubble">{{ msg.text }}</div>
-            </div>
+            <template v-for="item in renderItems" :key="item.key">
+              <div v-if="item.dateLabel" class="date-sep"><span>{{ item.dateLabel }}</span></div>
+              <div class="msg-row" :class="{ own: item.own, grouped: !item.showHeader }">
+                <div class="msg-avatar">
+                  <Avatar
+                    v-if="item.showHeader"
+                    :seed="senderInfo(item.msg.sender).avatarSeed"
+                    :name="senderInfo(item.msg.sender).displayName"
+                    :size="36"
+                  />
+                </div>
+                <div class="msg-body">
+                  <div v-if="item.showHeader" class="msg-head">
+                    <span class="msg-name">{{ senderInfo(item.msg.sender).displayName }}</span>
+                    <span class="msg-time">{{ formatTime(item.msg.timestamp) }}</span>
+                  </div>
+                  <div class="msg-bubble">{{ item.msg.text }}</div>
+                </div>
+              </div>
+            </template>
           </div>
 
-          <div class="input-area">
+          <div class="composer">
             <input
               v-model="newMessage"
-              class="message-input"
               type="text"
-              placeholder="Please enter your message..."
+              placeholder="Type a message…"
               @keyup.enter="sendMessage"
             />
-            <button class="send-button" @click="sendMessage">Send</button>
+            <button class="btn btn-primary send" @click="sendMessage" title="Send">
+              <BaseIcon name="send" :size="18" />
+            </button>
           </div>
-        </div>
-      </div>
+        </template>
+      </section>
     </div>
 
-    <!-- Create Chatroom Popup -->
-    <div class="modal-overlay" v-if="showCreateModal">
-      <div class="modal-content">
-        <h3>Create your new chatroom</h3>
-        
-        <!-- chatroom elements -->
+    <!-- Create room modal -->
+    <div class="modal-overlay" v-if="showCreateModal" @click.self="closeCreateModal">
+      <div class="modal">
+        <h3>Create a room</h3>
         <template v-if="!createSuccessMessage">
-          <input v-model="newRoomName" placeholder="Chatroom name" class="modal-input" />
-          <select v-model="newRoomPrivacy" class="modal-select">
+          <input v-model="newRoomName" placeholder="Room name" />
+          <textarea v-model="newRoomDescription" rows="2" placeholder="Description (optional)" />
+          <select v-model="newRoomPrivacy">
             <option value="public">Public</option>
             <option value="private">Private</option>
           </select>
-          <div class="modal-buttons">
-            <button @click="createRoomConfirm">Create</button>
-            <button @click="showCreateModal = false">Exit</button>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" @click="closeCreateModal">Cancel</button>
+            <button class="btn btn-primary" @click="createRoomConfirm">Create</button>
           </div>
         </template>
-
-        <!-- successful tip -->
         <template v-else>
           <p class="success-message">{{ createSuccessMessage }}</p>
-          <!-- <p class="reminder">Please save your chatroom ID, which is the only way your members can find your chatroom.</p> -->
-          <div class="modal-buttons">
-            <button @click="closeCreateModal">Got it!</button>
+          <div class="modal-actions">
+            <button class="btn btn-primary" @click="closeCreateModal">Got it</button>
           </div>
         </template>
       </div>
     </div>
 
-    <!-- Search Chatroom Result Popup -->
-    <div class="modal-overlay" v-if="showSearchModal">
-      <div class="modal-content">
-        <!-- successful -->
-        <div v-if="foundRoom">
-          <h3>We've found your chatroom</h3>
-          <p><strong>Name:</strong> {{ foundRoom.name }}</p>
-          <p>Would you like to join in?</p>
-          <div class="modal-buttons">
-            <button @click="joinChatroom(foundRoom.room_id)">Join</button>
-            <button @click="showSearchModal = false">Exit</button>
+    <!-- Search result modal -->
+    <div class="modal-overlay" v-if="showSearchModal" @click.self="showSearchModal = false">
+      <div class="modal">
+        <template v-if="foundRoom">
+          <h3>Room found</h3>
+          <p class="modal-line"><strong>{{ foundRoom.name }}</strong></p>
+          <p class="modal-sub">Would you like to join?</p>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" @click="showSearchModal = false">Cancel</button>
+            <button class="btn btn-primary" @click="joinChatroom(foundRoom.room_id)">Join</button>
           </div>
-        </div>
+        </template>
+        <template v-else>
+          <p class="modal-line">{{ searchError }}</p>
+          <div class="modal-actions">
+            <button class="btn btn-primary" @click="showSearchModal = false">OK</button>
+          </div>
+        </template>
+      </div>
+    </div>
 
-        <!-- fail -->
-        <div v-else>
-          <p>{{ searchError }}</p>
-          <div class="modal-buttons">
-            <button @click="showSearchModal = false">OK</button>
-          </div>
+    <!-- Exit confirm modal -->
+    <div class="modal-overlay" v-if="showExitConfirm" @click.self="showExitConfirm = false">
+      <div class="modal">
+        <h3>Leave room?</h3>
+        <p class="modal-sub">Are you sure you want to leave <strong>{{ exitRoomToConfirm?.name }}</strong>?</p>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" @click="showExitConfirm = false">Cancel</button>
+          <button class="btn btn-danger" @click="confirmExitChatroom">Leave</button>
         </div>
       </div>
     </div>
 
-    <!-- exit chatroom -->
-    <div v-if="showExitConfirm" class="modal-overlay">
-      <div class="modal-content">
-        <h3>Exit this chatroom?</h3>
-        <p>Are you sure you want to leave <strong>{{ exitRoomToConfirm?.name }}</strong>?</p>
-        <div class="modal-buttons">
-          <button @click="confirmExitChatroom">Confirm</button>
-          <button @click="showExitConfirm = false">Cancel</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Right-click Menu -->
+    <!-- Right-click menu -->
     <ul
       v-if="contextMenuVisible"
       class="context-menu"
       :style="{ top: `${contextMenuPosition.y}px`, left: `${contextMenuPosition.x}px` }"
       @click="handleContextMenuClick"
     >
-      <li @click="handleExitClick">Exit Chatroom</li>
+      <li @click="handleExitClick">Leave room</li>
     </ul>
 
-
-
+    <!-- Room info drawer -->
+    <Transition name="drawer">
+      <RoomInfoPanel
+        v-if="showRoomInfo && selectedRoom"
+        :room-id="selectedRoom.id"
+        @close="showRoomInfo = false"
+      />
+    </Transition>
   </div>
 </template>
 
@@ -167,47 +201,46 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-//import axios from 'axios'
 import api from '@/utils/http'
+import Avatar from '@/components/Avatar.vue'
+import BaseIcon from '@/components/BaseIcon.vue'
+import RoomInfoPanel from '@/components/RoomInfoPanel.vue'
+import { toast } from '@/composables/useToast'
+
 const route = useRoute()
 const router = useRouter()
-const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+const apiBase = import.meta.env.VITE_API_BASE_URL || ''
 const base_wsUrl = import.meta.env.VITE_WS_BASE_URL || `${location.origin.replace(/^http/, 'ws')}/ws`
-// const socketMap: Record<string, WebSocket> = {}
 const socketReadyMap: Record<string, Promise<void>> = {}
 const socketReadyResolvers: Record<string, () => void> = {}
-// ========================== Utility function ==============================
+
+const username = localStorage.getItem('username') || 'Unknown user'
+
+// Current user's own profile (for the top-bar chip). Falls back to the username.
+const me = ref<{ displayName: string; avatarSeed: string }>({
+  displayName: username,
+  avatarSeed: username,
+})
+
+// roomId → (username → profile), used to render sender name + avatar on messages.
+const memberMap = ref<Record<string, Record<string, { displayName: string; avatarSeed: string }>>>({})
+
+// ========================== Utility functions ==============================
 function handleContextMenuClick() {
   // left empty to avoid TypeScript errors.
 }
-// Add chatroom to sidebar
-const addChatroomToSidebar = (room: { id: string, name: string, isPrivate: boolean }) => {
+
+const addChatroomToSidebar = (room: { id: string; name: string; isPrivate: boolean }) => {
   if (!chatrooms.value.some(r => r.id === room.id)) {
-    chatrooms.value.push({
-      id: room.id,
-      name: room.name,
-      isPrivate: room.isPrivate,
-      unread: 0,
-    })
+    chatrooms.value.push({ id: room.id, name: room.name, isPrivate: room.isPrivate, unread: 0 })
   }
 }
-
 
 const scrollToBottom = () => {
   nextTick(() => {
     setTimeout(() => {
       const el = messageContainer.value
-      if (el) {
-        el.scrollTop = el.scrollHeight - el.clientHeight
-        console.log(
-          'Scroll to bottom scrollTop:',
-          el.scrollTop,
-          'scrollHeight:',
-          el.scrollHeight,
-          'clientHeight:',
-          el.clientHeight
-        )
-      }
+      if (el) el.scrollTop = el.scrollHeight - el.clientHeight
     }, 50)
   })
 }
@@ -218,36 +251,101 @@ const isAtBottom = () => {
   return el.scrollTop + el.clientHeight >= el.scrollHeight - 10 // tolerance 10px
 }
 
+// Resolve a sender's display name + avatar seed from the room's member map.
+const senderInfo = (sender: string) => {
+  const m = selectedRoom.value ? memberMap.value[selectedRoom.value.id]?.[sender] : undefined
+  return { displayName: m?.displayName || sender, avatarSeed: m?.avatarSeed || sender }
+}
 
+const loadMembers = async (roomId: string) => {
+  try {
+    const { data } = await api.get(`/chatrooms/${roomId}/members`)
+    const map: Record<string, { displayName: string; avatarSeed: string }> = {}
+    for (const mem of data.members || []) {
+      map[mem.username] = {
+        displayName: mem.display_name || mem.username,
+        avatarSeed: mem.avatar_seed || mem.username,
+      }
+    }
+    memberMap.value[roomId] = map
+  } catch (err) {
+    console.error('Load members failed:', err)
+  }
+}
 
+function formatTime(ts?: string) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
 
+function formatDate(d: Date) {
+  const today = new Date()
+  const yesterday = new Date()
+  yesterday.setDate(today.getDate() - 1)
+  if (d.toDateString() === today.toDateString()) return 'Today'
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday'
+  return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })
+}
+
+// Build render items: group consecutive messages by same sender / time, and
+// insert a date separator when the day changes.
+const renderItems = computed(() => {
+  const list = messages.value
+  const items: {
+    key: number
+    msg: { sender: string; text: string; timestamp?: string }
+    dateLabel: string | null
+    showHeader: boolean
+    own: boolean
+  }[] = []
+  let prev: { sender: string; timestamp?: string } | null = null
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i]
+    const d = m.timestamp ? new Date(m.timestamp) : null
+    const prevD = prev?.timestamp ? new Date(prev.timestamp) : null
+    const validD = d && !isNaN(d.getTime())
+    const validPrevD = prevD && !isNaN(prevD.getTime())
+    const newDay = !validPrevD || (validD && d!.toDateString() !== prevD!.toDateString())
+    const senderChanged = !prev || prev.sender !== m.sender
+    const gap = validD && validPrevD ? d!.getTime() - prevD!.getTime() > 5 * 60 * 1000 : true
+    items.push({
+      key: i,
+      msg: m,
+      dateLabel: newDay && validD ? formatDate(d!) : null,
+      showHeader: newDay || senderChanged || gap,
+      own: m.sender === username,
+    })
+    prev = m
+  }
+  return items
+})
 
 // ========================== Load chatrooms after login ==========================
 
 onMounted(async () => {
-  console.log('Chatroom.vue mounted')
+  // Load own profile for the top-bar chip.
   try {
-    //const res = await axios.get(`${apiBase}/chatrooms/user/${username}`)
-    console.log('token in Chatroom.vue', localStorage.getItem('token'))
-    console.log('Plan to send a request to fetch the chatroom list')
-    //const res = await axios.get(`/api/chatrooms/user/${username}`)
-    const res = await api.get(`/chatrooms/user/${username}`)
+    const { data } = await api.get('/me')
+    me.value = {
+      displayName: data.display_name || username,
+      avatarSeed: data.avatar_seed || username,
+    }
+  } catch (err) {
+    console.error('Load profile failed:', err)
+  }
 
+  try {
+    const res = await api.get(`/chatrooms/user/${username}`)
     const rooms = res.data.rooms || []
     rooms.forEach((room: any) => {
-      const roomId = room.room_id || room.id //Prefer using room.room_id
+      const roomId = room.room_id || room.id // Prefer room.room_id
       if (!roomId || typeof roomId !== 'string') {
         console.warn('Skip invalid room:', room)
         return
       }
-
-      const normalizedRoom = {
-        id: roomId,
-        name: room.name,
-        isPrivate: room.isPrivate,
-      }
-
-      addChatroomToSidebar(normalizedRoom)
+      addChatroomToSidebar({ id: roomId, name: room.name, isPrivate: room.isPrivate })
       messageMap.value[roomId] = []
       connectWebSocket(roomId)
     })
@@ -272,8 +370,6 @@ const syncSelectedRoomFromRoute = () => {
   if (match) {
     activateRoom(match)
   } else {
-    // Not a room the user has joined (unknown/invalid id) — drop the stale param
-    // rather than silently showing nothing tied to a URL that looks valid.
     router.replace('/chatroom')
   }
 }
@@ -282,72 +378,52 @@ watch(() => route.params.roomId, () => {
   syncSelectedRoomFromRoute()
 })
 
-
-//search chatroom to join
+// search chatroom to join
 const searchRoomId = ref('')
 const showSearchModal = ref(false)
 const foundRoom = ref<{ room_id: string; name: string } | null>(null)
 const searchError = ref('')
 
-// handle searchroom
 const handleSearchRoom = async () => {
   if (!searchRoomId.value.trim()) return
-
   try {
     const response = await api.get(`${apiBase}/chatrooms/${searchRoomId.value.trim()}`)
     foundRoom.value = response.data
     searchError.value = ''
-    showSearchModal.value = true // show popup
+    showSearchModal.value = true
   } catch (err) {
     foundRoom.value = null
-    searchError.value = 'The chatroom does not exist. Please check your chatroom ID.'
+    searchError.value = 'No such room. Check the room ID (private rooms are invite-only).'
     showSearchModal.value = true
   }
 }
-//join chatroom
+
 const joinChatroom = async (roomId: string) => {
   try {
-    await api.post(`${apiBase}/chatrooms/join`, {
-      username,
-      chatroom_id: roomId
-    })
-
-    addChatroomToSidebar({
-      id: roomId,
-      name: foundRoom.value?.name || 'Unknown',
-      isPrivate: false,
-    })
+    await api.post(`${apiBase}/chatrooms/join`, { username, chatroom_id: roomId })
+    addChatroomToSidebar({ id: roomId, name: foundRoom.value?.name || 'Unknown', isPrivate: false })
     messageMap.value[roomId] = []
     showSearchModal.value = false
     searchRoomId.value = ''
     selectRoom(chatrooms.value.find(room => room.id === roomId)!)
-  } catch (err) {
-    console.error('join chatroom failed：', err)
-    searchError.value = 'Failed to join the chatroom. Please try again later.'
-    foundRoom.value = null
+    toast.success('Joined room')
+  } catch (err: any) {
+    const status = err.response?.status
+    showSearchModal.value = false
+    toast.error(status === 403 ? 'This room is private' : 'Failed to join the room')
   }
 }
 
-
-const username = localStorage.getItem('username') || 'Unknown user'
-//const socket = ref<WebSocket | null>(null)
-// const sockets = ref<{ [key: string]: WebSocket }>({})
-const sockets = ref<Record<string, WebSocket>>({}) 
-
+const sockets = ref<Record<string, WebSocket>>({})
 const chatrooms = ref<{ id: string; name: string; isPrivate: boolean; unread: number }[]>([])
-// const forcePort = ref<number | null>(null)
 
-//choose a chatroom to start chatting
 const selectedRoom = ref<null | typeof chatrooms.value[0]>(null)
-//const messages = ref<{ sender: string; text: string }[]>([])
+const showRoomInfo = ref(false)
 const newMessage = ref('')
-//const messageMap = ref<Record<string, { sender: string; text: string }[]>>({})
-const messageMap = ref<Record<string, { sender: string; text: string; timestamp?: string }[]>>({}) 
+const messageMap = ref<Record<string, { sender: string; text: string; timestamp?: string }[]>>({})
 const messages = computed(() =>
   selectedRoom.value ? messageMap.value[selectedRoom.value.id] || [] : []
 )
-
-// Establish WebSocket connection
 
 // Rooms currently mid-connect. Marked synchronously (before the first await)
 // so a second concurrent call for the same room bails out immediately instead
@@ -357,113 +433,84 @@ const messages = computed(() =>
 const connectingRooms = new Set<string>()
 
 const connectWebSocket = async (roomId: string) => {
-    if (sockets.value[roomId] || connectingRooms.has(roomId)) return;
-    connectingRooms.add(roomId);
+  if (sockets.value[roomId] || connectingRooms.has(roomId)) return
+  connectingRooms.add(roomId)
 
-    try {
-    const res = await api.get(`${apiBase}/chatrooms/${roomId}/enter`, {
-        params: { username }
-    });
+  try {
+    const res = await api.get(`${apiBase}/chatrooms/${roomId}/enter`, { params: { username } })
     if (res.status !== 200) {
-        console.error('Failed to retrieve WebSocket URL:', res.statusText);
-        return;
+      console.error('Failed to retrieve WebSocket URL:', res.statusText)
+      return
     }
     if (!res.data || !res.data.ws_url) {
-        console.error('Invalid WebSocket URL:', res.data);
-        return;
+      console.error('Invalid WebSocket URL:', res.data)
+      return
     }
-    // console.log('retrieve WebSocket URL:', res.data.ws_url);
-    // const wsUrl = res.data.ws_url;
-    // console.log("ws url:", `ws://10.0.0.23:${forcePort.value}/ws/${roomId}?username=${username}`)
-    // const wsUrl = `ws://10.0.0.23:${forcePort.value}/ws/${roomId}?username=${username}`
-    // const wsUrl = `ws://3.135.215.221/ws/${roomId}?username=${username}`
-    console.log("base_wsUrl:", base_wsUrl)
-    var final_wsurl = `${base_wsUrl}/${roomId}?username=${username}&token=${localStorage.getItem('token')}`
-    console.log("ws url:", final_wsurl)
-    const socket = new WebSocket(final_wsurl);
-    sockets.value[roomId] = socket;
+
+    const final_wsurl = `${base_wsUrl}/${roomId}?username=${username}&token=${localStorage.getItem('token')}`
+    const socket = new WebSocket(final_wsurl)
+    sockets.value[roomId] = socket
 
     socketReadyMap[roomId] = new Promise<void>((resolve) => {
-        socketReadyResolvers[roomId] = resolve;
-    });
+      socketReadyResolvers[roomId] = resolve
+    })
 
     socket.onopen = () => {
-        console.log('WebSocket connected');
-        socketReadyResolvers[roomId]();
-        if (!messageMap.value[roomId]) {
-            messageMap.value[roomId] = [];
-        }
-    };
+      socketReadyResolvers[roomId]()
+      if (!messageMap.value[roomId]) messageMap.value[roomId] = []
+    }
 
     socket.onmessage = (event) => {
-        try {
-            const msg = JSON.parse(event.data);
-            console.log('Receive Websocket message:', msg);
+      try {
+        const msg = JSON.parse(event.data)
+        if (!messageMap.value[roomId]) messageMap.value[roomId] = []
 
-            if (!messageMap.value[roomId]) messageMap.value[roomId] = [];
-
-            // Handle based on message type
-            switch (msg.type) {
-                case "message":
-                    // Real-time message, normalize and store into messageMap
-                    const normalizedMsg = {
-                        sender: msg.sender,
-                        text: msg.text,
-                        timestamp: msg.sentAt || msg.timestamp,
-                        roomId: msg.roomID || msg.room_id,
-                    };
-                    messageMap.value[roomId].push(normalizedMsg);
-                    if (isAtBottom()) {
-                        scrollToBottom();
-                    }
-                    break;
-
-                case "history_result":
-                    // Historical messages are handled by fetchHistoryViaWebSocket, ignore them here.
-                    console.log("Received history_result, delegate to fetchHistoryViaWebSocket for processing.");
-                    break;
-
-                default:
-                    console.warn("Unknown message type:", msg.type);
+        switch (msg.type) {
+          case 'message': {
+            const normalizedMsg = {
+              sender: msg.sender,
+              text: msg.text,
+              timestamp: msg.sentAt || msg.timestamp,
+              roomId: msg.roomID || msg.room_id,
             }
-        } catch (err) {
-            console.error('Failed to parse message：', err);
+            messageMap.value[roomId].push(normalizedMsg)
+            if (isAtBottom()) scrollToBottom()
+            break
+          }
+          case 'history_result':
+            // Handled by fetchHistoryViaWebSocket.
+            break
+          default:
+            console.warn('Unknown message type:', msg.type)
         }
-    };
+      } catch (err) {
+        console.error('Failed to parse message:', err)
+      }
+    }
 
     socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        alert('WebSocket error occurred. Please check your connection.');
-    };
+      console.error('WebSocket error:', error)
+      toast.error('Connection error. Please check your network.')
+    }
 
     socket.onclose = () => {
-        console.log('WebSocket closed');
-        delete sockets.value[roomId];
-    };
-    } finally {
-        connectingRooms.delete(roomId);
+      delete sockets.value[roomId]
     }
-};
+  } finally {
+    connectingRooms.delete(roomId)
+  }
+}
 
 // activate a room in the UI (connect socket, reset unread, scroll) — does NOT
 // touch the URL, so it's safe to call when syncing from a route change too.
 const activateRoom = async (room: typeof chatrooms.value[0]) => {
-  console.log('select room:', room)
-
   selectedRoom.value = room
-  console.log("123123123:", messageMap.value[room.id]);
-  if (!messageMap.value[room.id]) messageMap.value[room.id] = []//initialize
+  if (!messageMap.value[room.id]) messageMap.value[room.id] = []
   room.unread = 0
+  loadMembers(room.id)
   connectWebSocket(room.id)
 
   await socketReadyMap[room.id]
-  console.log('WebSocket state：', sockets.value[room.id]?.readyState)
-  if (sockets.value[room.id]?.readyState === WebSocket.OPEN) {
-    console.log('WebSocket connected')
-  } else {
-    console.log('WebSocket not connected')
-  }
-  // loadHistory(room.id) //load history
   scrollToBottom()
 }
 
@@ -476,90 +523,83 @@ const selectRoom = (room: typeof chatrooms.value[0]) => {
   activateRoom(room)
 }
 
-// send message
 const sendMessage = () => {
   if (!newMessage.value.trim() || !selectedRoom.value) return
   const roomId = selectedRoom.value.id
-  const socket = sockets.value[roomId] 
+  const socket = sockets.value[roomId]
   if (socket?.readyState === WebSocket.OPEN) {
-    const msg = { type:"message", sender: username, text: newMessage.value.trim() }
+    const msg = { type: 'message', sender: username, text: newMessage.value.trim() }
     socket.send(JSON.stringify(msg))
     newMessage.value = ''
-    
     scrollToBottom()
-    
   }
 }
 
-// Disconnect before the page is closed
 onBeforeUnmount(() => {
-  // if (socket.value) {
-  //   socket.value.close()
-  // }
-  Object.values(sockets.value).forEach(s => s.close()) 
+  Object.values(sockets.value).forEach(s => s.close())
 })
 
-const logout = () => {
-  alert('You have logged out. See you next time!')
+const logout = async () => {
+  try {
+    await api.post('/logout')
+  } catch (err) {
+    // proceed with local cleanup regardless
+  }
   localStorage.removeItem('username')
-  localStorage.removeItem('token') 
-  location.href = '/'
+  localStorage.removeItem('token')
+  toast.success('Logged out')
+  router.push('/login')
 }
 
-//create chatroom
+// create chatroom
 const showCreateModal = ref(false)
 const newRoomName = ref('')
+const newRoomDescription = ref('')
 const newRoomPrivacy = ref<'public' | 'private'>('public')
 const createSuccessMessage = ref('')
 
 const createRoomConfirm = async () => {
   if (!newRoomName.value.trim()) {
-    createSuccessMessage.value = 'Chatroom name cannot be empty'
+    toast.error('Room name cannot be empty')
     return
   }
-
   try {
     const response = await api.post(`${apiBase}/chatrooms`, {
       name: newRoomName.value.trim(),
+      description: newRoomDescription.value.trim(),
       is_private: newRoomPrivacy.value === 'private',
-      created_by: username
+      created_by: username,
     })
 
     const roomId = response.data.room_id
-    createSuccessMessage.value = `Create successfully! Your chatroom ID is ${roomId}.\nPlease save your chatroom ID, which is the only way your members can find your chatroom.`
-    // Add to chatroom list
+    createSuccessMessage.value = `Room created! Its ID is ${roomId} — share it so others can join.`
     const newRoom = {
       id: roomId,
       name: newRoomName.value.trim(),
       isPrivate: newRoomPrivacy.value === 'private',
-      unread: 0
+      unread: 0,
     }
-    //chatrooms.value.push(newRoom)
     addChatroomToSidebar(newRoom)
     messageMap.value[roomId] = []
-    // select this chatroom
     selectRoom(newRoom)
-
   } catch (error) {
-    createSuccessMessage.value = 'Creation failed. Please try again later.'
+    toast.error('Creation failed. Please try again later.')
     console.error('Creation failed:', error)
   }
 }
-//取消创建
+
 const closeCreateModal = () => {
   showCreateModal.value = false
   createSuccessMessage.value = ''
   newRoomName.value = ''
+  newRoomDescription.value = ''
   newRoomPrivacy.value = 'public'
 }
 
-
-
-
-const messageContainer = ref<HTMLElement | null>(null) 
-const noMoreMessages = ref<Record<string, boolean>>({}) 
-const loadingHistory = ref(false) 
-const pageSize = 20 
+const messageContainer = ref<HTMLElement | null>(null)
+const noMoreMessages = ref<Record<string, boolean>>({})
+const loadingHistory = ref(false)
+const pageSize = 20
 
 const loadHistory = async (roomId: string) => {
   if (loadingHistory.value || noMoreMessages.value[roomId]) return
@@ -567,486 +607,524 @@ const loadHistory = async (roomId: string) => {
 
   const existing = messageMap.value[roomId] || []
   const lastTimestamp = existing.length > 0 ? existing[0].timestamp : ''
-  console.log("last timestamp before:", lastTimestamp)
-  console.log("before fetching old", messageMap.value[roomId])
 
   try {
-    const older = await fetchHistoryViaWebSocket(roomId, lastTimestamp, pageSize);
-    console.log('load history：', older);
-    console.log("before loading old", messageMap.value[roomId])
+    const older = await fetchHistoryViaWebSocket(roomId, lastTimestamp, pageSize)
     if (!Array.isArray(older) || older.length === 0) {
-        noMoreMessages.value[roomId] = true;
-        return;
+      noMoreMessages.value[roomId] = true
+      return
     }
 
-    // Normalize message format
-    const normalizedOlder = older.map(msg => ({
+    const normalizedOlder = older
+      .map(msg => ({
         sender: msg.sender || msg.Sender, // Compatible with DynamoDB and real-time message
         text: msg.text || msg.Text,
         timestamp: msg.timestamp || msg.sentAt,
         roomId: msg.room_id || msg.roomID,
-    })).filter(msg => typeof msg.text === "string" && typeof msg.sender === "string");
+      }))
+      .filter(msg => typeof msg.text === 'string' && typeof msg.sender === 'string')
 
-    messageMap.value[roomId] = [
-        ...normalizedOlder.reverse(),
-        ...(messageMap.value[roomId] || []),
-    ];
-    console.log("update messageMap:", messageMap.value[roomId]);
-} catch (e) {
-    console.error('load history failed', e);
-} finally {
-    loadingHistory.value = false;
-}
+    messageMap.value[roomId] = [...normalizedOlder.reverse(), ...(messageMap.value[roomId] || [])]
+  } catch (e) {
+    console.error('load history failed', e)
+  } finally {
+    loadingHistory.value = false
+  }
 }
 
-function fetchHistoryViaWebSocket(roomId: string, before: string|undefined, limit: number): Promise<any[]> {
-    return new Promise((resolve, reject) => {
-        const socket = sockets.value[roomId];
-        if (!socket) {
-            reject(new Error("WebSocket is not connected"));
-            return;
+function fetchHistoryViaWebSocket(roomId: string, before: string | undefined, limit: number): Promise<any[]> {
+  return new Promise((resolve, reject) => {
+    const socket = sockets.value[roomId]
+    if (!socket) {
+      reject(new Error('WebSocket is not connected'))
+      return
+    }
+
+    const handler = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data)
+        if (data.type === 'history_result' && data.roomID === roomId) {
+          socket.removeEventListener('message', handler)
+          resolve(Array.isArray(data.messages) ? data.messages : [])
         }
+      } catch (e) {
+        console.error('Failed to parse WebSocket message:', e)
+        resolve([])
+      }
+    }
 
-        const handler = (event: MessageEvent) => {
-            try {
-                const data = JSON.parse(event.data);
-                console.log("Receive WebSocket message:", data); // raw data
-                if (data.type === "history_result" && data.roomID === roomId) {
-                    socket.removeEventListener("message", handler);
-                    if (Array.isArray(data.messages)) {
-                        console.log("handle history message:", data.messages); // after processing
-                        resolve(data.messages); // only return messages
-                    } else {
-                        console.warn("Invalid messages field:", data);
-                        resolve([]);
-                    }
-                }
-            } catch (e) {
-                console.error("Failed to parse WebSocket message:", e);
-                resolve([]);
-            }
-        };
+    socket.addEventListener('message', handler)
+    const request = { type: 'fetch_history', roomID: roomId, before, limit }
+    socket.send(JSON.stringify(request))
 
-        socket.addEventListener("message", handler);
-        const request = { type: "fetch_history", roomID: roomId, before, limit };
-        console.log("before 1111", messageMap.value[roomId])
-
-        socket.send(JSON.stringify(request));
-        console.log("before 2222", messageMap.value[roomId])
-
-        console.log("Send fetch_history request:", request);
-
-        setTimeout(() => {
-            socket.removeEventListener("message", handler);
-            reject(new Error("Fetching historical messages timed out"));
-        }, 5000);
-    });
+    setTimeout(() => {
+      socket.removeEventListener('message', handler)
+      reject(new Error('Fetching historical messages timed out'))
+    }, 5000)
+  })
 }
 
-
-//exit chatroom
+// exit chatroom
 const showExitConfirm = ref(false)
 const exitRoomToConfirm = ref<{ id: string; name: string } | null>(null)
 const contextMenuPosition = ref({ x: 0, y: 0 })
 const contextMenuVisible = ref(false)
 const contextMenuRoom = ref<null | typeof chatrooms.value[0]>(null)
 
-// open right-click menu
 const openContextMenu = (e: MouseEvent, room: typeof chatrooms.value[0]) => {
   contextMenuVisible.value = true
   contextMenuRoom.value = room
   contextMenuPosition.value = { x: e.clientX, y: e.clientY }
 }
 
-// exit click
 const handleExitClick = () => {
   exitRoomToConfirm.value = contextMenuRoom.value
   showExitConfirm.value = true
   contextMenuVisible.value = false
 }
 
-// Click outside the menu to hide it
 document.addEventListener('click', () => {
   contextMenuVisible.value = false
 })
 
-
 const confirmExitChatroom = async () => {
   if (!exitRoomToConfirm.value) return
-
   try {
     await api.post(`${apiBase}/chatrooms/exit`, {
       username,
       chatroom_id: exitRoomToConfirm.value.id,
     })
 
-    // remove chatroom
     chatrooms.value = chatrooms.value.filter(r => r.id !== exitRoomToConfirm.value?.id)
 
-    // delete websocket
     const socket = sockets.value[exitRoomToConfirm.value.id]
     if (socket) {
       socket.close()
       delete sockets.value[exitRoomToConfirm.value.id]
     }
-
-    // delete messagemap
     delete messageMap.value[exitRoomToConfirm.value.id]
 
-    // If it's the currently selected chatroom, deselect it and clear the URL
     if (selectedRoom.value?.id === exitRoomToConfirm.value.id) {
       selectedRoom.value = null
       router.push('/chatroom')
     }
 
-    // close popup
     showExitConfirm.value = false
     exitRoomToConfirm.value = null
+    toast.success('Left the room')
   } catch (err) {
     console.error('Failed to exit the chatroom:', err)
-    alert('Failed to exit the chatroom. Please try again later.')
+    toast.error('Failed to leave the room')
   }
 }
-
-
 </script>
 
 
 <style scoped>
-.chatroom-container {
+.chatroom {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  inset: 0;
   display: flex;
   flex-direction: column;
-  background-color: #1e1e1e;
-  color: white;
+  background-color: var(--bg);
+  color: var(--text);
 }
 
+/* top bar */
 .top-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 20px;
-  border-bottom: 1px solid #444;
-  background-color: #2c2c2c;
+  gap: 16px;
+  padding: 10px 16px;
+  background-color: var(--surface-1);
+  border-bottom: 1px solid var(--border);
 }
-
-.search-input {
+.search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex: 1;
-  max-width: 300px;
-  padding: 8px;
+  max-width: 380px;
+  padding: 0 12px;
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  color: var(--text-faint);
+}
+.search input {
+  border: none;
+  background: transparent;
+  padding: 9px 0;
+}
+.search input:focus {
+  box-shadow: none;
+}
+.user-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
+  background-color: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-full);
+  cursor: pointer;
+  color: var(--text);
+  width: auto;
+}
+.user-chip:hover {
+  background-color: var(--surface-2);
+}
+.chip-name {
   font-size: 14px;
-  background-color: #3a3a3a;
-  color: white;
-  border: 1px solid #555;
-  border-radius: 4px;
+  font-weight: 500;
+}
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.icon-btn:hover {
+  background-color: var(--surface-2);
+  color: var(--text);
 }
 
-.user-info {
+/* layout */
+.main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* sidebar */
+.sidebar {
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--surface-1);
+  border-right: 1px solid var(--border);
+}
+.sidebar-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.room-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  background-color: transparent;
+  border: none;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+  width: 100%;
+}
+.room-item:hover {
+  background-color: var(--surface-2);
+}
+.room-item.active {
+  background-color: var(--accent-soft);
+}
+.room-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.room-name {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.room-type {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.unread {
+  background-color: var(--accent);
+  color: #fff;
+  border-radius: var(--r-full);
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.create-room {
+  margin: 8px;
+  justify-content: center;
+}
+
+/* chat window */
+.chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background-color: var(--bg);
+}
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--text-faint);
+}
+.empty-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--r-lg);
+  background-color: var(--surface-1);
+  color: var(--text-muted);
+}
+.chat-header {
   display: flex;
   align-items: center;
   gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background-color: var(--surface-1);
 }
-
-.username {
-  font-weight: bold;
-}
-
-.logout-button {
-  background-color: #f56c6c;
-  color: white;
-  border: none;
-  padding: 6px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.main-content {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
-
-.sidebar {
-  width: 220px;
-  border-right: 1px solid #444;
-  padding: 10px;
+.chat-header-meta {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  background-color: #2c2c2c;
 }
-
-.chatroom-item {
-  padding: 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  background-color: #3a3a3a;
-  color: white;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 14px;
+.chat-title {
+  font-size: 15px;
+  font-weight: 600;
 }
-
-.chatroom-item:hover {
-  background-color: #505050;
-}
-
-.chatroom-item.active {
-  background-color: #1890ff;
-  color: white;
-}
-
-.room-name {
-  flex: 1;
-}
-
-.room-type {
+.chat-sub {
   font-size: 12px;
-  color: #ccc;
-  margin-left: 6px;
+  color: var(--text-faint);
 }
-
-.unread {
-  background-color: #f56c6c;
-  color: white;
-  border-radius: 10px;
-  padding: 2px 6px;
-  font-size: 12px;
-  margin-left: 6px;
-}
-
-.create-room {
-  font-weight: bold;
-  color: #1890ff;
-  text-align: center;
-  border: 1px dashed #1890ff;
-}
-
-.chat-window {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  background-color: #1e1e1e;
-  position: relative;
-}
-
-.placeholder-text {
-  color: #ccc;
-  font-size: 16px;
-  text-align: center;
-  margin-top: 100px;
-}
-
-.chat-content h3 {
-  margin-bottom: 10px;
-  text-align: center;
-}
-
-.chat-content {
-  flex: 1;
-  display: flex; 
-  flex-direction: column; 
-  overflow: hidden;
-  padding: 20px;
-  padding-bottom: 80px;
-}
-
-
 .messages {
   flex: 1;
   overflow-y: auto;
+  padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 2px;
 }
-
-.message-container {
-  display: flex;
-  flex-direction: column;
-  max-width: 70%;
-  word-break: break-word;
-}
-
-.message-container.own {
-  align-self: flex-end;
-  text-align: right;
-}
-
-.message-container.other {
-  align-self: flex-start;
-  text-align: left;
-}
-
-.sender {
-  font-size: 12px;
-  color: #aaa;
-  margin-bottom: 4px;
-  padding: 0 10px;
-}
-
-.message-bubble {
-  background-color: #3a3a3a;
-  padding: 10px 14px;
-  border-radius: 16px;
-  font-size: 14px;
-  color: white;
-  display: inline-block;
-  max-width: 100%;
-}
-
-.message-container.own .message-bubble {
-  background-color: #1890ff;
-  color: white;
-  border-top-right-radius: 0;
-}
-
-.message-container.other .message-bubble {
-  background-color: #3a3a3a;
-  color: white;
-  border-top-left-radius: 0;
-}
-
-.input-area {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  gap: 8px;
-  padding: 12px 20px;
-  background-color: #1e1e1e;
-  border-top: 1px solid #333;
-}
-
-.message-input {
-  flex: 1;
-  padding: 12px;
-  font-size: 16px;
-  background-color: #2c2c2c;
-  border: 1px solid #555;
-  border-radius: 4px;
-  color: white;
-}
-
-.send-button {
-  padding: 12px 18px;
-  background-color: #1890ff;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0,0,0,0.6);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 999;
-}
-
-.modal-content {
-  background-color: #2c2c2c;
-  padding: 20px 30px;
-  border-radius: 10px;
-  width: 320px;
-  color: white;
+.date-sep {
   text-align: center;
-  box-shadow: 0 0 10px #000;
+  margin: 16px 0 10px;
 }
-
-.modal-input, .modal-select {
-  width: 100%;
-  margin: 10px 0;
-  padding: 10px;
-  font-size: 14px;
-  background-color: #1e1e1e;
-  color: white;
-  border: 1px solid #555;
-  border-radius: 4px;
+.date-sep span {
+  font-size: 12px;
+  color: var(--text-faint);
+  background-color: var(--surface-2);
+  padding: 3px 10px;
+  border-radius: var(--r-full);
 }
-
-.modal-buttons {
+.msg-row {
   display: flex;
-  justify-content: center;
-  gap: 12px;
+  gap: 10px;
+  padding: 1px 0;
+  max-width: 78%;
+}
+.msg-row.grouped {
+  margin-top: 0;
+}
+.msg-row:not(.grouped) {
   margin-top: 10px;
 }
-
-.modal-buttons button {
-  padding: 8px 16px;
-  border: none;
-  cursor: pointer;
-  border-radius: 4px;
-  background-color: #1890ff;
-  color: white;
+.msg-row.own {
+  flex-direction: row-reverse;
+  align-self: flex-end;
 }
-
-.modal-buttons button:last-child {
-  background-color: #f56c6c;
+.msg-avatar {
+  width: 36px;
+  flex-shrink: 0;
 }
-
-.success-message {
-  color: white;
-  margin-top: 10px;
+.msg-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
-
+.msg-row.own .msg-body {
+  align-items: flex-end;
+}
+.msg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.msg-row.own .msg-head {
+  flex-direction: row-reverse;
+}
+.msg-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.msg-time {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.msg-bubble {
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  font-size: 14px;
+  line-height: 1.4;
+  background-color: var(--surface-2);
+  color: var(--text);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.msg-row.own .msg-bubble {
+  color: var(--on-accent);
+  background-image: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
 .history-loader {
   text-align: center;
-  font-size: 14px;
-  color: #1890ff;
+  font-size: 13px;
+  color: var(--accent);
   cursor: pointer;
-  text-decoration: underline;
-  margin-bottom: 12px;
-  transition: opacity 0.3s;
+  padding: 6px;
+}
+.history-loader.no-more {
+  color: var(--text-faint);
+  cursor: default;
 }
 
-.history-loader.no-more {
-  color: #aaa;
-  cursor: default;
-  text-decoration: none;
-} 
+/* composer */
+.composer {
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background-color: var(--surface-1);
+}
+.composer input {
+  flex: 1;
+}
+.send {
+  width: 44px;
+  padding: 0;
+  flex-shrink: 0;
+}
 
+/* modals */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+.modal {
+  width: 360px;
+  max-width: 90vw;
+  padding: 24px;
+  background-color: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.modal h3 {
+  margin: 0;
+  font-size: 17px;
+}
+.modal-line {
+  margin: 0;
+  font-size: 15px;
+}
+.modal-sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.success-message {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* context menu */
 .context-menu {
   position: fixed;
-  background-color: #2c2c2c;
-  border: 1px solid #444;
-  border-radius: 4px;
-  padding: 6px 0;
-  width: 160px;
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 4px;
+  min-width: 140px;
   z-index: 9999;
   list-style: none;
+  margin: 0;
+  box-shadow: var(--shadow-2);
 }
-
 .context-menu li {
-  padding: 8px 16px;
-  color: white;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--text);
   cursor: pointer;
+  border-radius: var(--r-sm);
 }
-
 .context-menu li:hover {
-  background-color: #3a3a3a;
+  background-color: var(--danger);
+  color: #fff;
 }
 
-
+@media (max-width: 640px) {
+  .sidebar {
+    width: 76px;
+  }
+  .room-meta,
+  .chip-name,
+  .create-room span {
+    display: none;
+  }
+  .msg-row {
+    max-width: 90%;
+  }
+}
 </style>
 
+<!-- non-scoped: transition classes must reach the RoomInfoPanel root element -->
 <style>
-html, body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  background-color: #1e1e1e;
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: opacity 0.2s ease;
+}
+.drawer-enter-from,
+.drawer-leave-to {
+  opacity: 0;
 }
 </style>
