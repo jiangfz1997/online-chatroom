@@ -50,6 +50,8 @@ const ICONS: Record<string, IconShape> = {
   user: { circles: [{ cx: 12, cy: 8, r: 4 }], paths: ['M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1'] },
   edit: { circles: [], paths: ['M12 20h9', 'M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z'] },
   chevronLeft: { circles: [], paths: ['M15 18l-6-6 6-6'] },
+  chat: { circles: [], paths: ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'] },
+  users: { circles: [{ cx: 9, cy: 8, r: 3.5 }], paths: ['M2 21v-1a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v1', 'M16 4a3.5 3.5 0 0 1 0 7', 'M17 21v-1a5 5 0 0 0-3-4.58'] },
 }
 
 const EMPTY: IconShape = { paths: [], circles: [] }

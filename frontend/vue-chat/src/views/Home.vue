@@ -1,65 +1,64 @@
 <template>
-    <div class="home-container">
-      <h1>Welcome to the chatroom</h1>
-      <p class="subtitle">Let's chat freely and enjoy the conversation together!</p>
-      <div class="button-group">
-        <button @click="goToLogin">Login</button>
-        <button @click="goToRegister">Sign Up</button>
-      </div>
+  <div class="home">
+    <div class="brand">
+      <span class="brand-mark"><BaseIcon name="chat" :size="34" /></span>
     </div>
-  </template>
-  
-  <script setup lang="ts">
-  import { useRouter } from 'vue-router' // import useRouter
-  const router = useRouter()             // router instance
-  
-  const goToLogin = () => {
-    console.log("login")
-    router.push('/login')
-  }
-  
-  const goToRegister = () => {
-    console.log("register")
-    router.push('/register')
-  }
-  </script>
-  
-  <style scoped>
-  .home-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 80vh;
-    padding: 20px;
-    text-align: center;
-  }
-  
-  .subtitle {
-    margin-top: 10px;
-    color: #666;
-    font-size: 16px;
-  }
-  
-  .button-group {
-    margin-top: 40px;
-    display: flex;
-    gap: 30px;
-  }
-  
-  button {
-    padding: 12px 24px;
-    font-size: 16px;
-    background-color: #42b983;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background-color 0.3s ease;
-  }
-  
-  button:hover {
-    background-color: #36986f;
-  }
-  </style>
-  
+    <h1 class="title">Chatroom</h1>
+    <p class="subtitle">Real-time rooms — chat freely and enjoy the conversation.</p>
+    <div class="actions">
+      <button class="btn btn-primary" @click="router.push('/login')">Login</button>
+      <button class="btn btn-ghost" @click="router.push('/register')">Sign Up</button>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { useRouter } from 'vue-router'
+import BaseIcon from '@/components/BaseIcon.vue'
+
+const router = useRouter()
+</script>
+
+<style scoped>
+.home {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+}
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--r-lg);
+  color: #fff;
+  background-image: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: var(--shadow-2);
+}
+.title {
+  margin: 24px 0 8px;
+  font-size: 40px;
+  letter-spacing: -0.02em;
+}
+.subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 16px;
+  max-width: 360px;
+}
+.actions {
+  margin-top: 36px;
+  display: flex;
+  gap: 14px;
+}
+.actions .btn {
+  min-width: 120px;
+  padding: 12px 20px;
+  font-size: 15px;
+}
+</style>
