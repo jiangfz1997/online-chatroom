@@ -121,7 +121,7 @@
           <p><strong>Name:</strong> {{ foundRoom.name }}</p>
           <p>Would you like to join in?</p>
           <div class="modal-buttons">
-            <button @click="joinChatroom(foundRoom.id)">Join</button>
+            <button @click="joinChatroom(foundRoom.room_id)">Join</button>
             <button @click="showSearchModal = false">Exit</button>
           </div>
         </div>
@@ -257,7 +257,7 @@ onMounted(async () => {
 //search chatroom to join
 const searchRoomId = ref('')
 const showSearchModal = ref(false)
-const foundRoom = ref<{ id: string; name: string } | null>(null)
+const foundRoom = ref<{ room_id: string; name: string } | null>(null)
 const searchError = ref('')
 
 // handle searchroom
