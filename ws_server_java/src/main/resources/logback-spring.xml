@@ -16,6 +16,22 @@
         </encoder>
     </appender>
 
+    <!-- Local/dev: same structured JSON, written to a file so Promtail (loadtest/
+         observability stack) can tail it — dev processes run on the host, not in
+         Docker, so file tailing is used instead of Docker log discovery. -->
+    <appender name="FILE_JSON" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/${appName}.json.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/${appName}.%d{yyyy-MM-dd}.%i.json.log.gz</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>3</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"service":"${appName}"}</customFields>
+        </encoder>
+    </appender>
+
     <springProfile name="prod">
         <root level="INFO">
             <appender-ref ref="CONSOLE_JSON"/>
@@ -25,6 +41,7 @@
     <springProfile name="!prod">
         <root level="INFO">
             <appender-ref ref="CONSOLE_TEXT"/>
+            <appender-ref ref="FILE_JSON"/>
         </root>
     </springProfile>
 </configuration>

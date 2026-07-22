@@ -17,6 +17,9 @@ target/
 test_out.txt
 test_output.txt
 
+# Local dev log files (JSON file appender, tailed by Promtail — see loadtest/)
+logs/
+
 # Node
 node_modules/
 dist/

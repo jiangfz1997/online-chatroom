@@ -29,6 +29,35 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+      - loki
+    networks:
+      - obs-net
+
+  loki:
+    image: grafana/loki:3.2.1
+    container_name: loadtest-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    networks:
+      - obs-net
+
+  # Tails the JSON log files ws-server/persist-worker write locally (see their
+  # logback-spring.xml FILE_JSON appender) — dev processes run on the host, not in
+  # Docker, so file tailing is used instead of Docker service discovery/log driver.
+  promtail:
+    image: grafana/promtail:3.2.1
+    container_name: loadtest-promtail
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - ../ws_server_java/logs:/var/log/ws-server:ro
+      - ../persist_worker_java/logs:/var/log/persist-worker:ro
+    command: ["-config.file=/etc/promtail/config.yml"]
+    depends_on:
+      - loki
     networks:
       - obs-net
 
@@ -51,6 +80,9 @@ services:
 networks:
   obs-net:
     driver: bridge
+
+volumes:
+  loki-data:
 
 # Scrapes ws-server / persist-worker's own /actuator/prometheus over
 # host.docker.internal (see prometheus/prometheus.yml) — they run as host
