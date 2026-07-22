@@ -19,6 +19,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -154,6 +155,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
         Map<String, String> out = new HashMap<>();
         out.put("type",   "message");
+        // Stable identity, independent of the wall clock — sentAt is display/ordering only and
+        // can collide across distinct messages sent in the same millisecond.
+        out.put("id",     UUID.randomUUID().toString());
         out.put("sender", client.getUsername());
         out.put("text",   text);
         out.put("roomID", client.getRoomId());

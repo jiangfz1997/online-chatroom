@@ -14,7 +14,7 @@ import java.util.List;
  * Key layout (matches Go redis.go):
  *   room:{roomId}:messages  — List (newest first via LPush, capped at recentCount)
  *   room:{roomId}:to_persist — List (RPush, consumed by persist-worker)
- *   dedup:room:{roomId}     — Set  (timestamp dedup, prevents double-write on multi-server)
+ *   dedup:room:{roomId}     — Set  (message-id dedup, prevents double-write on multi-server)
  *   rooms:active            — Set  (active room IDs for persist-worker discovery)
  */
 @Slf4j
@@ -39,19 +39,20 @@ public class RedisMessageService {
      * only the first writer stores it (matching Go version's SADD dedup).
      *
      * @param roomId    room the message belongs to
-     * @param timestamp ISO-8601 timestamp (used as dedup key)
+     * @param messageId unique per-message id (used as dedup key — must NOT be a timestamp,
+     *                  since distinct messages can share the same millisecond)
      * @param json      raw JSON message string
      */
-    public void saveMessage(String roomId, String timestamp, String json) {
+    public void saveMessage(String roomId, String messageId, String json) {
         String dedupKey   = "dedup:room:" + roomId;
         String msgKey     = "room:" + roomId + ":messages";
         String persistKey = "room:" + roomId + ":to_persist";
         String activeKey  = "rooms:active";
 
-        // SADD returns 0 if timestamp already exists → duplicate, skip
-        Long added = redis.opsForSet().add(dedupKey, timestamp);
+        // SADD returns 0 if messageId already exists → duplicate, skip
+        Long added = redis.opsForSet().add(dedupKey, messageId);
         if (added == null || added == 0) {
-            log.debug("Duplicate message for room [{}] ts={}, skipping Redis write", roomId, timestamp);
+            log.debug("Duplicate message for room [{}] id={}, skipping Redis write", roomId, messageId);
             return;
         }
 
