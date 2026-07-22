@@ -8,16 +8,27 @@ positions:
 clients:
   - url: http://loki:3100/loki/api/v1/push
 
-# Dev processes run on the host (mvn spring-boot:run), not as Docker containers, so
-# plain file tailing is used here instead of Docker service discovery / log driver
-# (the approach the plan uses once services are containerized in docker-compose.loadtest.yml).
+# Tails the FILE_JSON logback appender's output, bind-mounted from
+# docker-compose.loadtest.yml's ws1/ws2/persist-worker containers (see that file's
+# ./logs/* volumes). Plain file tailing rather than Docker service discovery/log
+# driver — simplest option that doesn't care whether the container runtime is
+# Docker Desktop or something else.
 scrape_configs:
-  - job_name: ws-server
+  - job_name: ws-server-1
     static_configs:
       - targets: [localhost]
         labels:
           service: ws-server
-          __path__: /var/log/ws-server/*.log
+          server_id: ws-java-1
+          __path__: /var/log/ws1/*.log
+
+  - job_name: ws-server-2
+    static_configs:
+      - targets: [localhost]
+        labels:
+          service: ws-server
+          server_id: ws-java-2
+          __path__: /var/log/ws2/*.log
 
   - job_name: persist-worker
     static_configs:

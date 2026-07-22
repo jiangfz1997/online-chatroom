@@ -1,3 +1,5 @@
+name: loadtest-obs
+
 services:
   prometheus:
     image: prom/prometheus:v2.55.1
@@ -45,16 +47,17 @@ services:
     networks:
       - obs-net
 
-  # Tails the JSON log files ws-server/persist-worker write locally (see their
-  # logback-spring.xml FILE_JSON appender) — dev processes run on the host, not in
-  # Docker, so file tailing is used instead of Docker service discovery/log driver.
+  # Tails the JSON log files ws1/ws2/persist-worker write (see their
+  # logback-spring.xml FILE_JSON appender), bind-mounted in from
+  # docker-compose.loadtest.yml's ./logs/* volumes.
   promtail:
     image: grafana/promtail:3.2.1
     container_name: loadtest-promtail
     volumes:
       - ./promtail/promtail-config.yml:/etc/promtail/config.yml:ro
-      - ../ws_server_java/logs:/var/log/ws-server:ro
-      - ../persist_worker_java/logs:/var/log/persist-worker:ro
+      - ./logs/ws1:/var/log/ws1:ro
+      - ./logs/ws2:/var/log/ws2:ro
+      - ./logs/persist-worker:/var/log/persist-worker:ro
     command: ["-config.file=/etc/promtail/config.yml"]
     depends_on:
       - loki
@@ -84,6 +87,7 @@ networks:
 volumes:
   loki-data:
 
-# Scrapes ws-server / persist-worker's own /actuator/prometheus over
-# host.docker.internal (see prometheus/prometheus.yml) — they run as host
-# processes (`mvn spring-boot:run`), same as in docker-compose.yml's comment.
+# Scrapes ws1/ws2/persist-worker's own /actuator/prometheus over host.docker.internal
+# (see prometheus/prometheus.yml) — works the same whether those containers came from
+# docker-compose.loadtest.yml or a host-run `mvn spring-boot:run`, since both publish
+# the same host ports.
