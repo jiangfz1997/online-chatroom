@@ -10,7 +10,7 @@
       "id": 1,
       "title": "Active WS sessions",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
       "targets": [
         { "expr": "ws_sessions_active", "legendFormat": "{{server_id}}", "refId": "A" }
@@ -20,7 +20,7 @@
       "id": 2,
       "title": "Messages in/out (rate)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 6, "w": 18, "x": 6, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
       "targets": [
@@ -32,7 +32,7 @@
       "id": 3,
       "title": "Broadcast duration (p95)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
       "targets": [
@@ -47,7 +47,7 @@
       "id": 4,
       "title": "Redis RTT (p95)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
       "targets": [
@@ -62,7 +62,7 @@
       "id": 5,
       "title": "Kafka send/consume duration (p95)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
       "targets": [
@@ -82,7 +82,7 @@
       "id": 6,
       "title": "Persist: to_persist backlog & DynamoDB write (p95)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
       "targets": [
         { "expr": "persist_queue_backlog", "legendFormat": "backlog (msgs)", "refId": "A" },
@@ -92,6 +92,43 @@
           "refId": "B"
         }
       ]
+    },
+    {
+      "id": 7,
+      "title": "k6: end-to-end latency (p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "k6_chat_e2e_latency_ms_p95{testid=~\"$testid\"}", "legendFormat": "{{testid}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "k6: messages sent/received (rate)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(k6_chat_messages_sent_total{testid=~\"$testid\"}[1m])", "legendFormat": "sent — {{testid}}", "refId": "A" },
+        { "expr": "rate(k6_chat_messages_received_total{testid=~\"$testid\"}[1m])", "legendFormat": "received — {{testid}}", "refId": "B" }
+      ]
     }
-  ]
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "testid",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(testid)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": false,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  }
 }

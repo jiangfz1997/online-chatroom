@@ -12,6 +12,10 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=7d"
+      # Lets k6's experimental-prometheus-rw output push straight to
+      # /api/v1/write (loadtest/run.sh), so k6 latency/throughput/checks land
+      # in the same Prometheus/Grafana as the app's own Micrometer metrics.
+      - "--web.enable-remote-write-receiver"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
