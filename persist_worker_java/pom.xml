@@ -20,10 +20,21 @@
 	</properties>
 
 	<dependencies>
-		<!-- Base Spring Boot (no web server) -->
+		<!-- Web: minimal embedded Tomcat, needed only to expose /actuator/prometheus over HTTP
+		     (this worker has no application controllers). -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter</artifactId>
+			<artifactId>spring-boot-starter-web</artifactId>
+		</dependency>
+
+		<!-- Metrics: Micrometer + Actuator /actuator/prometheus (M2a instrumentation) -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-registry-prometheus</artifactId>
 		</dependency>
 
 		<!-- Redis -->

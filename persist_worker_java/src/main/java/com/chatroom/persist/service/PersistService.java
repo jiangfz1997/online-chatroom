@@ -1,5 +1,6 @@
 package com.chatroom.persist.service;
 
+import com.chatroom.persist.metrics.PersistMetrics;
 import com.chatroom.persist.model.RawMessage;
 import com.chatroom.persist.repository.MessageRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,6 +30,7 @@ public class PersistService {
     private final StringRedisTemplate redis;
     private final MessageRepository messageRepository;
     private final ObjectMapper objectMapper;
+    private final PersistMetrics metrics;
 
     // Java initializer provides the default when running without a Spring context (unit tests).
     // Spring @Value overrides this when the application context is present.
@@ -37,10 +39,12 @@ public class PersistService {
 
     public PersistService(StringRedisTemplate redis,
                           MessageRepository messageRepository,
-                          ObjectMapper objectMapper) {
+                          ObjectMapper objectMapper,
+                          PersistMetrics metrics) {
         this.redis = redis;
         this.messageRepository = messageRepository;
         this.objectMapper = objectMapper;
+        this.metrics = metrics;
     }
 
     /**
@@ -57,6 +61,7 @@ public class PersistService {
                 return;
             }
             log.info("Syncing {} active room(s)", roomIds.size());
+            metrics.setBacklog(totalBacklog(roomIds));
             roomIds.forEach(this::syncRoom);
         } finally {
             MDC.remove("batchId");
@@ -79,9 +84,11 @@ public class PersistService {
                 RawMessage msg = objectMapper.readValue(json, RawMessage.class);
                 if (isValid(msg)) {
                     messageRepository.save(msg);
+                    metrics.messagePersisted();
                     saved++;
                 } else {
                     log.warn("Skipping malformed message for room [{}]: {}", roomId, json);
+                    metrics.messageMalformed();
                 }
             } catch (Exception e) {
                 log.error("Failed to parse/save message for room [{}]: {}", roomId, e.getMessage());
@@ -91,6 +98,18 @@ public class PersistService {
         if (saved > 0) {
             log.info("Persisted {} message(s) for room [{}]", saved, roomId);
         }
+    }
+
+    /** Sum of the to_persist queue length across all active rooms — a snapshot taken once per tick. */
+    private long totalBacklog(Set<String> roomIds) {
+        long total = 0;
+        for (String roomId : roomIds) {
+            Long len = redis.opsForList().size("room:" + roomId + ":to_persist");
+            if (len != null) {
+                total += len;
+            }
+        }
+        return total;
     }
 
     private boolean isValid(RawMessage msg) {

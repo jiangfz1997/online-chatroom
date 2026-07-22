@@ -1,8 +1,10 @@
 package com.chatroom.persist.service;
 
+import com.chatroom.persist.metrics.PersistMetrics;
 import com.chatroom.persist.model.RawMessage;
 import com.chatroom.persist.repository.MessageRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -40,7 +42,8 @@ class PersistServiceTest {
     void setup() {
         when(redis.opsForSet()).thenReturn(setOps);
         when(redis.opsForList()).thenReturn(listOps);
-        service = new PersistService(redis, messageRepository, new ObjectMapper());
+        service = new PersistService(redis, messageRepository, new ObjectMapper(),
+                new PersistMetrics(new SimpleMeterRegistry()));
     }
 
     // ── syncAllRooms ──────────────────────────────────────────────────────────

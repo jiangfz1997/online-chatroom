@@ -1,10 +1,12 @@
 package com.chatroom.persist.repository;
 
+import com.chatroom.persist.metrics.PersistMetrics;
 import com.chatroom.persist.model.RawMessage;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -19,7 +21,12 @@ import static org.mockito.Mockito.verify;
 class MessageRepositoryTest {
 
     @Mock DynamoDbClient dynamo;
-    @InjectMocks MessageRepository repository;
+    MessageRepository repository;
+
+    @BeforeEach
+    void setup() {
+        repository = new MessageRepository(dynamo, new PersistMetrics(new SimpleMeterRegistry()));
+    }
 
     @Test
     void save_callsPutItemWithCorrectAttributes() {

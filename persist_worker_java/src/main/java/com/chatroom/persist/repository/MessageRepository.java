@@ -1,5 +1,6 @@
 package com.chatroom.persist.repository;
 
+import com.chatroom.persist.metrics.PersistMetrics;
 import com.chatroom.persist.model.RawMessage;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Repository;
@@ -20,9 +21,11 @@ public class MessageRepository {
     private static final String TABLE = "Messages";
 
     private final DynamoDbClient dynamo;
+    private final PersistMetrics metrics;
 
-    public MessageRepository(DynamoDbClient dynamo) {
+    public MessageRepository(DynamoDbClient dynamo, PersistMetrics metrics) {
         this.dynamo = dynamo;
+        this.metrics = metrics;
     }
 
     public void save(RawMessage msg) {
@@ -35,7 +38,7 @@ public class MessageRepository {
                         "text",      AttributeValue.fromS(msg.getText())
                 ))
                 .build();
-        dynamo.putItem(request);
+        metrics.recordDynamoWrite(() -> dynamo.putItem(request));
         log.info("Saved message: room=[{}] sender=[{}] ts=[{}]",
                 msg.getRoomId(), msg.getSender(), msg.getTimestamp());
     }
