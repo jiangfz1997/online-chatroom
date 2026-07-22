@@ -1,10 +1,12 @@
 package com.chatroom.ws;
 
 import com.chatroom.kafka.ChatMessageProducer;
+import com.chatroom.metrics.WsMetrics;
 import com.chatroom.model.HistoryMessage;
 import com.chatroom.repository.MessageRepository;
 import com.chatroom.service.RedisMessageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -41,7 +43,8 @@ class ChatWebSocketHandlerTest {
 
     @BeforeEach
     void setup() {
-        handler = new ChatWebSocketHandler(hub, redisService, messageRepository, producer, objectMapper);
+        handler = new ChatWebSocketHandler(hub, redisService, messageRepository, producer, objectMapper,
+                new WsMetrics(new SimpleMeterRegistry()));
 
         when(session.getId()).thenReturn("session-1");
         when(session.isOpen()).thenReturn(true);

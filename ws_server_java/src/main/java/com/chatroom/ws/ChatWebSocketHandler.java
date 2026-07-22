@@ -1,6 +1,7 @@
 package com.chatroom.ws;
 
 import com.chatroom.kafka.ChatMessageProducer;
+import com.chatroom.metrics.WsMetrics;
 import com.chatroom.model.HistoryMessage;
 import com.chatroom.repository.MessageRepository;
 import com.chatroom.service.RedisMessageService;
@@ -36,6 +37,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final MessageRepository messageRepository;
     private final ChatMessageProducer producer;
     private final ObjectMapper objectMapper;
+    private final WsMetrics metrics;
 
     // Session registry (WebSocketSession.getId() → ClientSession)
     private final ConcurrentHashMap<String, ClientSession> sessions = new ConcurrentHashMap<>();
@@ -44,12 +46,14 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                                 RedisMessageService redisService,
                                 MessageRepository messageRepository,
                                 ChatMessageProducer producer,
-                                ObjectMapper objectMapper) {
+                                ObjectMapper objectMapper,
+                                WsMetrics metrics) {
         this.hub = hub;
         this.redisService = redisService;
         this.messageRepository = messageRepository;
         this.producer = producer;
         this.objectMapper = objectMapper;
+        this.metrics = metrics;
     }
 
     /**
@@ -150,6 +154,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      * Mirrors Go handleBroadcastMessage.
      */
     private void handleBroadcastMessage(ClientSession client, JsonNode incoming) {
+        metrics.messageReceived();
         String text = incoming.path("text").asText("");
 
         Map<String, String> out = new HashMap<>();

@@ -1,5 +1,6 @@
 package com.chatroom.service;
 
+import com.chatroom.metrics.WsMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -22,6 +23,7 @@ import java.util.List;
 public class RedisMessageService {
 
     private final StringRedisTemplate redis;
+    private final WsMetrics metrics;
 
     @Value("${redis.message.recent-count:50}")
     private long recentCount;
@@ -29,8 +31,9 @@ public class RedisMessageService {
     @Value("${redis.message.ttl-seconds:86400}")
     private long ttlSeconds;
 
-    public RedisMessageService(StringRedisTemplate redis) {
+    public RedisMessageService(StringRedisTemplate redis, WsMetrics metrics) {
         this.redis = redis;
+        this.metrics = metrics;
     }
 
     /**
@@ -43,6 +46,10 @@ public class RedisMessageService {
      * @param json      raw JSON message string
      */
     public void saveMessage(String roomId, String timestamp, String json) {
+        metrics.recordRedisRtt(() -> doSaveMessage(roomId, timestamp, json));
+    }
+
+    private void doSaveMessage(String roomId, String timestamp, String json) {
         String dedupKey   = "dedup:room:" + roomId;
         String msgKey     = "room:" + roomId + ":messages";
         String persistKey = "room:" + roomId + ":to_persist";

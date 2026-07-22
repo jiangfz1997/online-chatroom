@@ -1,8 +1,10 @@
 package com.chatroom.kafka;
 
+import com.chatroom.metrics.WsMetrics;
 import com.chatroom.redis.RedisRoutingService;
 import com.chatroom.service.RedisMessageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.header.internals.RecordHeaders;
@@ -38,7 +40,8 @@ class ChatMessageConsumerTest {
 
     @BeforeEach
     void setup() {
-        consumer = new ChatMessageConsumer(redisService, routingService, objectMapper);
+        consumer = new ChatMessageConsumer(redisService, routingService, objectMapper,
+                new WsMetrics(new SimpleMeterRegistry()));
     }
 
     private ConsumerRecord<String, String> makeRecord(String roomId, String sentAt,

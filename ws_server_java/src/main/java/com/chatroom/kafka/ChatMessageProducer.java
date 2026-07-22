@@ -1,5 +1,7 @@
 package com.chatroom.kafka;
 
+import com.chatroom.metrics.WsMetrics;
+import io.micrometer.core.instrument.Timer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.internals.RecordHeader;
@@ -21,13 +23,16 @@ public class ChatMessageProducer {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final String topic;
     private final String serverId;
+    private final WsMetrics metrics;
 
     public ChatMessageProducer(KafkaTemplate<String, String> kafkaTemplate,
                                @Value("${kafka.topic}") String topic,
-                               @Value("${server.id}") String serverId) {
+                               @Value("${server.id}") String serverId,
+                               WsMetrics metrics) {
         this.kafkaTemplate = kafkaTemplate;
         this.topic = topic;
         this.serverId = serverId;
+        this.metrics = metrics;
     }
 
     /**
@@ -38,8 +43,10 @@ public class ChatMessageProducer {
         ProducerRecord<String, String> record = new ProducerRecord<>(topic, roomId, json);
         record.headers().add(new RecordHeader("serverID", serverId.getBytes(StandardCharsets.UTF_8)));
 
+        Timer.Sample sample = metrics.startKafkaSend();
         kafkaTemplate.send(record)
                 .whenComplete((result, ex) -> {
+                    metrics.stopKafkaSend(sample);
                     if (ex != null) {
                         log.error("Kafka send failed for room [{}]: {}", roomId, ex.getMessage());
                     } else {
