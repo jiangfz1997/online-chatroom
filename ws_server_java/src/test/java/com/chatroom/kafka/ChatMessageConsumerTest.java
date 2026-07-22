@@ -41,11 +41,11 @@ class ChatMessageConsumerTest {
         consumer = new ChatMessageConsumer(redisService, routingService, objectMapper);
     }
 
-    private ConsumerRecord<String, String> makeRecord(String roomId, String sentAt,
+    private ConsumerRecord<String, String> makeRecord(String roomId, String id, String sentAt,
                                                        String senderServerId) {
         String json = String.format(
-                "{\"type\":\"message\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"%s\",\"sentAt\":\"%s\"}",
-                roomId, sentAt);
+                "{\"type\":\"message\",\"id\":\"%s\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"%s\",\"sentAt\":\"%s\"}",
+                id, roomId, sentAt);
         RecordHeaders headers = new RecordHeaders();
         if (senderServerId != null) {
             headers.add(new RecordHeader("serverID", senderServerId.getBytes(StandardCharsets.UTF_8)));
@@ -57,19 +57,37 @@ class ChatMessageConsumerTest {
 
     @Test
     void consume_savesToRedisAndDispatchesWithSenderId() {
-        var record = makeRecord("room-1", "2024-01-01T10:00:00Z", OTHER_SERVER);
+        var record = makeRecord("room-1", "msg-id-1", "2024-01-01T10:00:00Z", OTHER_SERVER);
         consumer.consume(record);
 
-        verify(redisService).saveMessage(eq("room-1"), eq("2024-01-01T10:00:00Z"), anyString());
+        // Dedup key is the message id, not the timestamp — two distinct messages can share
+        // the same sentAt millisecond, so the id is what must be passed through.
+        verify(redisService).saveMessage(eq("room-1"), eq("msg-id-1"), anyString());
         verify(routingService).dispatch(eq("room-1"), anyString(), eq(OTHER_SERVER));
     }
 
     @Test
     void consume_missingServerIdHeader_dispatchesWithEmptySenderId() {
-        var record = makeRecord("room-1", "2024-01-01T10:00:00Z", null);
+        var record = makeRecord("room-1", "msg-id-1", "2024-01-01T10:00:00Z", null);
         consumer.consume(record);
 
         verify(routingService).dispatch(eq("room-1"), anyString(), eq(""));
+    }
+
+    @Test
+    void consume_missingId_doesNotThrow() {
+        RecordHeaders headers = new RecordHeaders();
+        headers.add(new RecordHeader("serverID", OTHER_SERVER.getBytes(StandardCharsets.UTF_8)));
+        ConsumerRecord<String, String> record = new ConsumerRecord<>(
+                "chat_messages", 0, 0L,
+                System.currentTimeMillis(), TimestampType.CREATE_TIME,
+                0, 0, "room-1",
+                "{\"type\":\"message\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\"}",
+                headers, Optional.empty());
+
+        consumer.consume(record);
+
+        verifyNoInteractions(routingService, redisService);
     }
 
     @Test

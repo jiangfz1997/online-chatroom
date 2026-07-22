@@ -128,8 +128,8 @@ class CrossInstanceRoutingIntegrationTest {
         assertThat(routedInstances).containsExactly("ws-test-with-client");
 
         String json = String.format(
-                "{\"type\":\"message\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"%s\",\"sentAt\":\"%s\"}",
-                ROOM_ID, Instant.now());
+                "{\"type\":\"message\",\"id\":\"%s\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"%s\",\"sentAt\":\"%s\"}",
+                java.util.UUID.randomUUID(), ROOM_ID, Instant.now());
         producer.send(ROOM_ID, json);
 
         assertThat(bobReceived.await(15, TimeUnit.SECONDS))

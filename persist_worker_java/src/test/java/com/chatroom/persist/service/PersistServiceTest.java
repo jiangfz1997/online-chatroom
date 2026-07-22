@@ -34,7 +34,7 @@ class PersistServiceTest {
 
     private static final String ROOM = "room-1";
     private static final String MSG_JSON =
-            "{\"type\":\"message\",\"sender\":\"alice\",\"text\":\"hello\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\"}";
+            "{\"type\":\"message\",\"id\":\"msg-1\",\"sender\":\"alice\",\"text\":\"hello\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\"}";
 
     @BeforeEach
     void setup() {
@@ -101,6 +101,19 @@ class PersistServiceTest {
         assertThat(saved.getSender()).isEqualTo("alice");
         assertThat(saved.getText()).isEqualTo("hello");
         assertThat(saved.getTimestamp()).isEqualTo("2024-01-01T10:00:00Z");
+        assertThat(saved.getId()).isEqualTo("msg-1");
+    }
+
+    @Test
+    void syncRoom_missingId_skipsMessage() {
+        String noId = "{\"type\":\"message\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\"}";
+        when(listOps.leftPop("room:" + ROOM + ":to_persist"))
+                .thenReturn(noId)
+                .thenReturn(null);
+
+        service.syncRoom(ROOM);
+
+        verify(messageRepository, never()).save(any());
     }
 
     @Test

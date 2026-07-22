@@ -10,6 +10,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class RawMessage {
+    private String id;
     private String sender;
     private String text;
 
