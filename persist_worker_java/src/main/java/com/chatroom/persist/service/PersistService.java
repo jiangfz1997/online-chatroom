@@ -115,6 +115,7 @@ public class PersistService {
     private boolean isValid(RawMessage msg) {
         return msg.getRoomId() != null && !msg.getRoomId().isBlank()
                 && msg.getTimestamp() != null && !msg.getTimestamp().isBlank()
+                && msg.getId() != null && !msg.getId().isBlank()
                 && msg.getSender() != null
                 && msg.getText() != null;
     }

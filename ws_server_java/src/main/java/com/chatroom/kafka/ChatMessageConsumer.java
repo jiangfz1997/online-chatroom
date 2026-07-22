@@ -60,27 +60,29 @@ public class ChatMessageConsumer {
                 senderServerId = new String(header.value(), StandardCharsets.UTF_8);
             }
 
-            // Parse roomId and timestamp from the JSON payload
+            // Parse roomId and message id from the JSON payload
             String roomId = null;
-            String timestamp = null;
+            String messageId = null;
             try {
                 JsonNode node = objectMapper.readTree(json);
                 roomId    = node.path("roomID").asText(null);
-                timestamp = node.path("sentAt").asText(null);
+                messageId = node.path("id").asText(null);
             } catch (Exception e) {
                 log.error("Failed to parse Kafka message JSON: {}", e.getMessage());
                 return;
             }
 
-            if (roomId == null || timestamp == null) {
-                log.warn("Kafka message missing roomID or sentAt, skipping");
+            if (roomId == null || messageId == null) {
+                log.warn("Kafka message missing roomID or id, skipping");
                 return;
             }
 
             log.info("Kafka message from server [{}] for room [{}]", senderServerId, roomId);
 
-            // Save to Redis (dedup Set ensures only one server stores per message)
-            redisService.saveMessage(roomId, timestamp, json);
+            // Save to Redis (dedup Set on message id ensures only one server stores per message;
+            // deduping on the id rather than sentAt avoids false-positive collisions when two
+            // distinct messages land in the same millisecond)
+            redisService.saveMessage(roomId, messageId, json);
 
             // Route to only the instances that have local clients in this room.
             // The sender is excluded inside dispatch() — it already broadcast locally

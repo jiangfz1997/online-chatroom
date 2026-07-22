@@ -18,6 +18,11 @@ import java.util.stream.Collectors;
  * Reads messages from the DynamoDB "Messages" table.
  * Schema: PK=room_id (S), SK=timestamp (S), sender (S), text (S).
  * Mirrors Go's getMessagesFromDynamo in client.go.
+ *
+ * SK is written as "{timestamp}#{id}" (see persist-worker's MessageRepository) to keep it
+ * unique across messages that land in the same millisecond. fromMap() strips the "#{id}"
+ * suffix back off before handing the timestamp to callers/frontend; rows written before
+ * this change have no suffix and pass through unchanged.
  */
 @Slf4j
 @Repository
@@ -59,9 +64,13 @@ public class MessageRepository {
     }
 
     private HistoryMessage fromMap(Map<String, AttributeValue> item) {
+        String sortKey = item.get("timestamp").s();
+        int idSeparator = sortKey.indexOf('#');
+        String timestamp = idSeparator >= 0 ? sortKey.substring(0, idSeparator) : sortKey;
+
         return new HistoryMessage(
                 item.get("room_id").s(),
-                item.get("timestamp").s(),
+                timestamp,
                 item.get("sender").s(),
                 item.get("text").s()
         );
