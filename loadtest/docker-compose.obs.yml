@@ -1,0 +1,57 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: loadtest-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - obs-net
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: loadtest-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - obs-net
+
+  # Redis itself has no /metrics endpoint; redis_exporter translates INFO/latency
+  # stats into something Prometheus can scrape. Talks to the app's Redis over the
+  # host (ws-server/persist-worker run as host processes today, not in this
+  # compose project), so no shared Docker network with docker-compose.yml is needed.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.66.0
+    container_name: loadtest-redis-exporter
+    environment:
+      REDIS_ADDR: "redis://host.docker.internal:6379"
+    ports:
+      - "9121:9121"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - obs-net
+
+networks:
+  obs-net:
+    driver: bridge
+
+# Scrapes ws-server / persist-worker's own /actuator/prometheus over
+# host.docker.internal (see prometheus/prometheus.yml) — they run as host
+# processes (`mvn spring-boot:run`), same as in docker-compose.yml's comment.

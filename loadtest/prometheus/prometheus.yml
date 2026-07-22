@@ -1,0 +1,32 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ws-server instances. ws1 is the current single-instance dev setup; ws2 is the
+  # second port from the "1 api + 2 ws" load-test topology (see M2 plan) — left in
+  # as a down target until that instance exists, so the panel/target list doesn't
+  # need editing again when it's added.
+  - job_name: ws-server
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:8081
+          - host.docker.internal:8082
+        labels:
+          service: ws-server
+
+  - job_name: persist-worker
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8090"]
+        labels:
+          service: persist-worker
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]

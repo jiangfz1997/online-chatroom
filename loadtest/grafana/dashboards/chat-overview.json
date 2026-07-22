@@ -1,0 +1,97 @@
+{
+  "uid": "chat-loadtest-overview",
+  "title": "Chat Load Test Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Active WS sessions",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "ws_sessions_active", "legendFormat": "{{server_id}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Messages in/out (rate)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 6, "w": 18, "x": 6, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(ws_messages_in_total[1m])", "legendFormat": "in — {{server_id}}", "refId": "A" },
+        { "expr": "rate(ws_messages_out_total[1m])", "legendFormat": "out — {{server_id}}", "refId": "B" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Broadcast duration (p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(ws_broadcast_duration_seconds_bucket[5m])) by (le, server_id))",
+          "legendFormat": "{{server_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Redis RTT (p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(ws_redis_rtt_seconds_bucket[5m])) by (le, server_id))",
+          "legendFormat": "{{server_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Kafka send/consume duration (p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(ws_kafka_send_duration_seconds_bucket[5m])) by (le, server_id))",
+          "legendFormat": "send — {{server_id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(ws_kafka_consume_duration_seconds_bucket[5m])) by (le, server_id))",
+          "legendFormat": "consume — {{server_id}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Persist: to_persist backlog & DynamoDB write (p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        { "expr": "persist_queue_backlog", "legendFormat": "backlog (msgs)", "refId": "A" },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(persist_dynamodb_write_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "dynamo write p95 (s)",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}
