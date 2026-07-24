@@ -151,18 +151,23 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     // ── private dispatch methods ──────────────────────────────────────────────
 
     /**
-     * Builds the outgoing message envelope, broadcasts locally, then publishes to Kafka.
-     * Mirrors Go handleBroadcastMessage.
+     * Builds the outgoing message envelope and publishes it to Kafka. Mirrors Go
+     * handleBroadcastMessage, minus the local broadcast (see below).
      */
     private void handleBroadcastMessage(ClientSession client, JsonNode incoming) {
         metrics.messageReceived();
         String text = incoming.path("text").asText("");
 
+        // Client-generated id: lets the client resend the exact same envelope if it never
+        // gets an ack (see the ack/send_error callback below) without the resend showing up
+        // as a second message — ChatMessageConsumer dedupes on this id before broadcasting.
+        // Falls back to a server-generated UUID for older clients that don't send one yet.
+        String clientMsgId = incoming.path("id").asText("");
+        String id = clientMsgId.isBlank() ? UUID.randomUUID().toString() : clientMsgId;
+
         Map<String, String> out = new HashMap<>();
         out.put("type",   "message");
-        // Stable identity, independent of the wall clock — sentAt is display/ordering only and
-        // can collide across distinct messages sent in the same millisecond.
-        out.put("id",     UUID.randomUUID().toString());
+        out.put("id",     id);
         out.put("sender", client.getUsername());
         out.put("text",   text);
         out.put("roomID", client.getRoomId());
@@ -176,14 +181,34 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        log.info("Received message from user [{}] in room [{}], broadcasting + pushing to Kafka",
+        log.info("Received message from user [{}] in room [{}], publishing to Kafka",
                 client.getUsername(), client.getRoomId());
 
-        // Broadcast to all local clients in the room (including sender for echo)
-        hub.broadcast(client.getRoomId(), json);
+        // No local broadcast anymore — every client, including this sender, receives the
+        // message the same way: via Kafka consume -> dispatch (ChatMessageConsumer). That
+        // adds one bus hop of latency to the sender's own copy in exchange for a single
+        // delivery path with no special-cased "already saw it locally" client.
+        //
+        // The ack/send_error sent back here is a fast "did this reach Kafka" signal for the
+        // client's pending-bubble UI — it fires on the producer callback, before the message
+        // has necessarily been consumed/broadcast yet.
+        producer.send(client.getRoomId(), json)
+                .whenComplete((result, ex) -> {
+                    if (ex != null) {
+                        client.send(buildControlEnvelope("send_error", id));
+                    } else {
+                        client.send(buildControlEnvelope("ack", id));
+                    }
+                });
+    }
 
-        // Publish to Kafka so other ws-server instances forward to their local clients
-        producer.send(client.getRoomId(), json);
+    private String buildControlEnvelope(String type, String id) {
+        try {
+            return objectMapper.writeValueAsString(Map.of("type", type, "id", id));
+        } catch (Exception e) {
+            log.error("Failed to serialize {} envelope: {}", type, e.getMessage());
+            return "{\"type\":\"" + type + "\"}";
+        }
     }
 
     /**

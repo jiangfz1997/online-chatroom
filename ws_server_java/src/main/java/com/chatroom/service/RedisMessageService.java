@@ -45,12 +45,17 @@ public class RedisMessageService {
      * @param messageId unique per-message id (used as dedup key — must NOT be a timestamp,
      *                  since distinct messages can share the same millisecond)
      * @param json      raw JSON message string
+     * @return true if this call actually stored the message (first time seen), false if
+     *         messageId was already present (a duplicate — e.g. a client-side resend after
+     *         a slow/lost ack, or Kafka's own at-least-once redelivery). Callers that also
+     *         broadcast/route the message must skip that step on a duplicate, or every
+     *         resend becomes a visible double-message for the rest of the room.
      */
-    public void saveMessage(String roomId, String messageId, String json) {
-        metrics.recordRedisRtt(() -> doSaveMessage(roomId, messageId, json));
+    public boolean saveMessage(String roomId, String messageId, String json) {
+        return metrics.recordRedisRtt(() -> doSaveMessage(roomId, messageId, json));
     }
 
-    private void doSaveMessage(String roomId, String messageId, String json) {
+    private boolean doSaveMessage(String roomId, String messageId, String json) {
         String dedupKey   = "dedup:room:" + roomId;
         String msgKey     = "room:" + roomId + ":messages";
         String persistKey = "room:" + roomId + ":to_persist";
@@ -60,7 +65,7 @@ public class RedisMessageService {
         Long added = redis.opsForSet().add(dedupKey, messageId);
         if (added == null || added == 0) {
             log.debug("Duplicate message for room [{}] id={}, skipping Redis write", roomId, messageId);
-            return;
+            return false;
         }
 
         // Push to recent-message list (newest first), cap at recentCount
@@ -75,6 +80,7 @@ public class RedisMessageService {
         redis.opsForSet().add(activeKey, roomId);
 
         log.debug("Saved message to Redis for room [{}]", roomId);
+        return true;
     }
 
     /**

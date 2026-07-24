@@ -20,6 +20,7 @@ import org.springframework.web.socket.WebSocketSession;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
@@ -80,24 +81,64 @@ class ChatWebSocketHandlerTest {
     // ── message dispatch ──────────────────────────────────────────────────────
 
     @Test
-    void handleTextMessage_broadcastMessage_broadcastsAndPublishesToKafka() throws Exception {
+    void handleTextMessage_broadcastMessage_publishesToKafkaWithoutLocalBroadcast() throws Exception {
+        when(producer.send(anyString(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
+
         handler.afterConnectionEstablished(session);
 
         TextMessage incoming = new TextMessage("{\"type\":\"message\",\"text\":\"hello world\"}");
         handler.handleTextMessage(session, incoming);
 
-        // Should broadcast to room via hub
-        ArgumentCaptor<String> broadcastCaptor = ArgumentCaptor.forClass(String.class);
-        verify(hub).broadcast(eq("room-1"), broadcastCaptor.capture());
-        String broadcasted = broadcastCaptor.getValue();
-        assertThat(broadcasted).contains("\"type\":\"message\"");
-        assertThat(broadcasted).contains("\"sender\":\"alice\"");
-        assertThat(broadcasted).contains("\"text\":\"hello world\"");
-        assertThat(broadcasted).contains("\"roomID\":\"room-1\"");
-        assertThat(broadcasted).contains("\"sentAt\":");
+        // No more local broadcast — every client, including the sender, gets the message via
+        // Kafka consume -> dispatch now (ChatMessageConsumer), not synchronously here.
+        verify(hub, never()).broadcast(anyString(), anyString());
 
-        // Should also push to Kafka
-        verify(producer).send(eq("room-1"), eq(broadcasted));
+        ArgumentCaptor<String> publishedCaptor = ArgumentCaptor.forClass(String.class);
+        verify(producer).send(eq("room-1"), publishedCaptor.capture());
+        String published = publishedCaptor.getValue();
+        assertThat(published).contains("\"type\":\"message\"");
+        assertThat(published).contains("\"sender\":\"alice\"");
+        assertThat(published).contains("\"text\":\"hello world\"");
+        assertThat(published).contains("\"roomID\":\"room-1\"");
+        assertThat(published).contains("\"sentAt\":");
+        // No client-provided id, so the handler generated a UUID fallback.
+        assertThat(published).containsPattern("\"id\":\"[0-9a-f-]{36}\"");
+    }
+
+    @Test
+    void handleTextMessage_broadcastMessage_usesClientProvidedId() throws Exception {
+        when(producer.send(anyString(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
+
+        handler.afterConnectionEstablished(session);
+        handler.handleTextMessage(session, new TextMessage(
+                "{\"type\":\"message\",\"id\":\"client-msg-42\",\"text\":\"hi\"}"));
+
+        verify(producer).send(eq("room-1"), contains("\"id\":\"client-msg-42\""));
+    }
+
+    @Test
+    void handleTextMessage_broadcastMessage_sendSucceeds_sendsAckToSender() throws Exception {
+        when(producer.send(anyString(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
+
+        handler.afterConnectionEstablished(session);
+        handler.handleTextMessage(session, new TextMessage(
+                "{\"type\":\"message\",\"id\":\"client-msg-1\",\"text\":\"hi\"}"));
+
+        verify(session, timeout(1000)).sendMessage(argThat((TextMessage m) ->
+                m.getPayload().contains("\"type\":\"ack\"") && m.getPayload().contains("\"id\":\"client-msg-1\"")));
+    }
+
+    @Test
+    void handleTextMessage_broadcastMessage_sendFails_sendsSendErrorToSender() throws Exception {
+        when(producer.send(anyString(), anyString()))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("kafka down")));
+
+        handler.afterConnectionEstablished(session);
+        handler.handleTextMessage(session, new TextMessage(
+                "{\"type\":\"message\",\"id\":\"client-msg-1\",\"text\":\"hi\"}"));
+
+        verify(session, timeout(1000)).sendMessage(argThat((TextMessage m) ->
+                m.getPayload().contains("\"type\":\"send_error\"") && m.getPayload().contains("\"id\":\"client-msg-1\"")));
     }
 
     @Test

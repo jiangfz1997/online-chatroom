@@ -6,6 +6,7 @@ import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * Single Micrometer facade for ws-server, exposed via Actuator at /actuator/prometheus.
@@ -74,6 +75,11 @@ public class WsMetrics {
 
     public void recordRedisRtt(Runnable saveMessage) {
         redisRttTimer.record(saveMessage);
+    }
+
+    /** Same timing as {@link #recordRedisRtt(Runnable)}, but for callers that need a result. */
+    public <T> T recordRedisRtt(Supplier<T> saveMessage) {
+        return redisRttTimer.record(saveMessage);
     }
 
     public Timer.Sample startKafkaSend() {

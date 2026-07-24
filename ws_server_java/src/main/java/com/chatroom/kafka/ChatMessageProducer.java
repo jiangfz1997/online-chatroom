@@ -7,9 +7,11 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Publishes chat messages to the Kafka topic.
@@ -38,13 +40,18 @@ public class ChatMessageProducer {
     /**
      * Publish a JSON message to the chat_messages topic.
      * Key = roomId (Kafka uses this for partition routing, keeps room messages ordered).
+     *
+     * @return the send's future, so the caller (ChatWebSocketHandler) can tell the
+     *         original sender whether the message actually reached Kafka — success/failure
+     *         here doesn't block on it, this is on top of the same completion this method
+     *         already logs internally.
      */
-    public void send(String roomId, String json) {
+    public CompletableFuture<SendResult<String, String>> send(String roomId, String json) {
         ProducerRecord<String, String> record = new ProducerRecord<>(topic, roomId, json);
         record.headers().add(new RecordHeader("serverID", serverId.getBytes(StandardCharsets.UTF_8)));
 
         Timer.Sample sample = metrics.startKafkaSend();
-        kafkaTemplate.send(record)
+        return kafkaTemplate.send(record)
                 .whenComplete((result, ex) -> {
                     metrics.stopKafkaSend(sample);
                     if (ex != null) {
