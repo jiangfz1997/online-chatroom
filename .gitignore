@@ -20,6 +20,9 @@ test_output.txt
 # Local dev log files (JSON file appender, tailed by Promtail — see loadtest/)
 logs/
 
+# k6 run outputs (loadtest/run.sh writes results/<RUN_TAG>/summary.json per run)
+results/
+
 # Node
 node_modules/
 dist/

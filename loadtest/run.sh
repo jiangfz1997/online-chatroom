@@ -9,6 +9,20 @@
 #   ./run.sh baseline baseline-kafka-01
 #   ./run.sh baseline tune-03-sqs-batch -- -e VUS=50 -e MSG_INTERVAL_MS=500
 #
+# Fault injection (tmp_doc/05 §Track1 P0), for the "reliability" scenario:
+# set FAULT to run a docker fault against the app stack partway through the k6
+# run, in parallel with it, so reliability.js's gap counters capture real loss.
+#   FAULT=none            no-op (default) — use this to capture the clean baseline
+#   FAULT=restart-ws2     docker restart loadtest-ws2 after FAULT_DELAY_S
+#   FAULT=restart-redis   docker restart loadtest-app-redis after FAULT_DELAY_S
+#   FAULT=stop-kafka      docker stop loadtest-kafka after FAULT_DELAY_S, held down
+#                         for FAULT_DOWNTIME_S, then docker start
+# FAULT_DELAY_S (default 20) / FAULT_DOWNTIME_S (default 15) — pick CONN_HOLD_MS
+# in the k6 -e args generously larger than FAULT_DELAY_S + FAULT_DOWNTIME_S so the
+# fault actually lands mid-traffic instead of after the run ends. Example:
+#   FAULT=stop-kafka FAULT_DELAY_S=20 FAULT_DOWNTIME_S=15 \
+#     ./run.sh reliability rel-kafka-stop-01 -- -e VUS=10 -e CONN_HOLD_MS=60000
+#
 # Assumes docker-compose.loadtest.yml (app) and docker-compose.obs.yml
 # (Prometheus/Grafana/Loki) are already up.
 set -euo pipefail
@@ -17,6 +31,18 @@ SCENARIO="${1:?usage: run.sh <scenario> <RUN_TAG> [-- k6-args...]}"
 RUN_TAG="${2:?usage: run.sh <scenario> <RUN_TAG> [-- k6-args...]}"
 shift 2
 if [ "${1:-}" = "--" ]; then shift; fi
+
+FAULT="${FAULT:-none}"
+FAULT_DELAY_S="${FAULT_DELAY_S:-20}"
+FAULT_DOWNTIME_S="${FAULT_DOWNTIME_S:-15}"
+
+case "$FAULT" in
+  none|restart-ws2|restart-redis|stop-kafka) ;;
+  *)
+    echo "ERROR: unknown FAULT=$FAULT (expected none|restart-ws2|restart-redis|stop-kafka)" >&2
+    exit 1
+    ;;
+esac
 
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -58,6 +84,34 @@ wait_healthy ws1 "$WS1_HEALTH"
 wait_healthy ws2 "$WS2_HEALTH"
 wait_healthy persist-worker "$PERSIST_HEALTH"
 
+inject_fault() {
+  [ "$FAULT" = "none" ] && return 0
+  sleep "$FAULT_DELAY_S"
+  case "$FAULT" in
+    restart-ws2)
+      echo "[$RUN_TAG] FAULT: restarting ws2"
+      docker restart loadtest-ws2 > /dev/null
+      ;;
+    restart-redis)
+      echo "[$RUN_TAG] FAULT: restarting redis"
+      docker restart loadtest-app-redis > /dev/null
+      ;;
+    stop-kafka)
+      echo "[$RUN_TAG] FAULT: stopping kafka for ${FAULT_DOWNTIME_S}s"
+      docker stop loadtest-kafka > /dev/null
+      sleep "$FAULT_DOWNTIME_S"
+      docker start loadtest-kafka > /dev/null
+      echo "[$RUN_TAG] FAULT: kafka restarted"
+      ;;
+  esac
+}
+
+if [ "$FAULT" != "none" ]; then
+  echo "=== [$RUN_TAG] fault injection armed: FAULT=$FAULT delay=${FAULT_DELAY_S}s ==="
+  inject_fault &
+  FAULT_PID=$!
+fi
+
 echo "=== [$RUN_TAG] 2/4 running k6 scenario: $SCENARIO ==="
 set +e
 # MSYS_NO_PATHCONV: git-bash on Windows rewrites leading-/ arguments (like -w
@@ -78,6 +132,14 @@ MSYS_NO_PATHCONV=1 docker run --rm -i \
 K6_EXIT=$?
 set -e
 echo "=== [$RUN_TAG] 3/4 k6 summary -> ${RESULTS_DIR}/summary.json (k6 exit=$K6_EXIT) ==="
+
+if [ -n "${FAULT_PID:-}" ]; then
+  wait "$FAULT_PID" 2>/dev/null || true
+fi
+
+if [ "$SCENARIO" = "reliability" ]; then
+  node scripts/reliability-summary.js "${RESULTS_DIR}/summary.json" || true
+fi
 
 echo "=== [$RUN_TAG] 4/4 resetting state for next run ==="
 docker exec loadtest-app-redis redis-cli FLUSHALL > /dev/null

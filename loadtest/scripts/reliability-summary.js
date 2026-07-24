@@ -1,0 +1,30 @@
+// Prints a loss-rate readout from a reliability.js k6 run's summary.json.
+// Invoked by run.sh: node scripts/reliability-summary.js <path-to-summary.json>
+const fs = require('fs');
+
+const data = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const m = data.metrics || {};
+const count = (name) => {
+  const metric = m[name];
+  if (!metric) return null;
+  const c = metric.values ? metric.values.count : metric.count;
+  return typeof c === 'number' ? c : null;
+};
+
+const sent = count('chat_messages_sent');
+const recvOther = count('chat_messages_received_other');
+// Counters with zero observations across the whole run are omitted from k6s
+// summary entirely, so a missing gap metric means "zero gaps", not "no data".
+const gapOther = count('chat_gap_detected_other') || 0;
+const gapOwn = count('chat_gap_detected_own') || 0;
+
+if (sent === null) {
+  console.log('(no chat_messages_sent metric found in summary.json -- not a reliability scenario run)');
+  process.exit(0);
+}
+
+const denom = recvOther + gapOther;
+const lossRate = denom > 0 ? gapOther / denom : 0;
+
+console.log(`sent=${sent} recv_other=${recvOther} gap_other=${gapOther} gap_own=${gapOwn}`);
+console.log(`cross-instance loss rate ~= ${(lossRate * 100).toFixed(2)}%`);
