@@ -13,6 +13,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.data.redis.connection.RedisListCommands.Direction;
 import org.springframework.data.redis.core.ListOperations;
 import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -35,6 +36,8 @@ class PersistServiceTest {
     PersistService service;
 
     private static final String ROOM = "room-1";
+    private static final String SOURCE_KEY = "room:" + ROOM + ":to_persist";
+    private static final String PROCESSING_KEY = "room:" + ROOM + ":persist_processing";
     private static final String MSG_JSON =
             "{\"type\":\"message\",\"id\":\"msg-1\",\"sender\":\"alice\",\"text\":\"hello\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\"}";
 
@@ -42,8 +45,19 @@ class PersistServiceTest {
     void setup() {
         when(redis.opsForSet()).thenReturn(setOps);
         when(redis.opsForList()).thenReturn(listOps);
+        // No orphans left over from a previous run, by default — recoverOrphans() becomes a
+        // no-op after this single size() check. Individual tests override to exercise it.
+        when(listOps.size(anyString())).thenReturn(0L);
         service = new PersistService(redis, messageRepository, new ObjectMapper(),
                 new PersistMetrics(new SimpleMeterRegistry()));
+    }
+
+    private void stubClaims(String... jsons) {
+        var stub = when(listOps.move(SOURCE_KEY, Direction.LEFT, PROCESSING_KEY, Direction.RIGHT));
+        for (String json : jsons) {
+            stub = stub.thenReturn(json);
+        }
+        stub.thenReturn(null);
     }
 
     // ── syncAllRooms ──────────────────────────────────────────────────────────
@@ -52,22 +66,20 @@ class PersistServiceTest {
     void syncAllRooms_noActiveRooms_doesNothing() {
         when(setOps.members("rooms:active")).thenReturn(Set.of());
         service.syncAllRooms();
-        verify(listOps, never()).leftPop(anyString());
+        verify(listOps, never()).move(anyString(), any(), anyString(), any());
     }
 
     @Test
     void syncAllRooms_nullActiveRooms_doesNothing() {
         when(setOps.members("rooms:active")).thenReturn(null);
         service.syncAllRooms();
-        verify(listOps, never()).leftPop(anyString());
+        verify(listOps, never()).move(anyString(), any(), anyString(), any());
     }
 
     @Test
     void syncAllRooms_withActiveRoom_syncsIt() {
         when(setOps.members("rooms:active")).thenReturn(Set.of(ROOM));
-        when(listOps.leftPop("room:" + ROOM + ":to_persist"))
-                .thenReturn(MSG_JSON)
-                .thenReturn(null);
+        stubClaims(MSG_JSON);
 
         service.syncAllRooms();
 
@@ -77,23 +89,20 @@ class PersistServiceTest {
     // ── syncRoom ──────────────────────────────────────────────────────────────
 
     @Test
-    void syncRoom_popsAndSavesMessages() {
-        when(listOps.leftPop("room:" + ROOM + ":to_persist"))
-                .thenReturn(MSG_JSON)
-                .thenReturn(MSG_JSON)
-                .thenReturn(null);
+    void syncRoom_claimsAndSavesMessages() {
+        stubClaims(MSG_JSON, MSG_JSON);
 
         service.syncRoom(ROOM);
 
-        verify(listOps, times(3)).leftPop("room:" + ROOM + ":to_persist"); // 2 messages + null
+        verify(listOps, times(3)).move(SOURCE_KEY, Direction.LEFT, PROCESSING_KEY, Direction.RIGHT); // 2 + null
         verify(messageRepository, times(2)).save(any(RawMessage.class));
+        // Each successfully-saved message is removed from processing once confirmed.
+        verify(listOps, times(2)).remove(PROCESSING_KEY, 1, MSG_JSON);
     }
 
     @Test
     void syncRoom_savesCorrectFields() {
-        when(listOps.leftPop("room:" + ROOM + ":to_persist"))
-                .thenReturn(MSG_JSON)
-                .thenReturn(null);
+        stubClaims(MSG_JSON);
 
         service.syncRoom(ROOM);
 
@@ -110,18 +119,18 @@ class PersistServiceTest {
     @Test
     void syncRoom_missingId_skipsMessage() {
         String noId = "{\"type\":\"message\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\"}";
-        when(listOps.leftPop("room:" + ROOM + ":to_persist"))
-                .thenReturn(noId)
-                .thenReturn(null);
+        stubClaims(noId);
 
         service.syncRoom(ROOM);
 
         verify(messageRepository, never()).save(any());
+        // Malformed messages are removed from processing too — retrying won't fix bad JSON shape.
+        verify(listOps).remove(PROCESSING_KEY, 1, noId);
     }
 
     @Test
     void syncRoom_emptyQueue_savesNothing() {
-        when(listOps.leftPop("room:" + ROOM + ":to_persist")).thenReturn(null);
+        stubClaims();
 
         service.syncRoom(ROOM);
 
@@ -130,10 +139,7 @@ class PersistServiceTest {
 
     @Test
     void syncRoom_malformedJson_skipsAndContinues() {
-        when(listOps.leftPop("room:" + ROOM + ":to_persist"))
-                .thenReturn("not-json")
-                .thenReturn(MSG_JSON)
-                .thenReturn(null);
+        stubClaims("not-json", MSG_JSON);
 
         service.syncRoom(ROOM);
 
@@ -145,9 +151,7 @@ class PersistServiceTest {
     void syncRoom_missingRequiredFields_skipsMessage() {
         // Missing roomID and sentAt
         String incomplete = "{\"sender\":\"alice\",\"text\":\"hi\"}";
-        when(listOps.leftPop("room:" + ROOM + ":to_persist"))
-                .thenReturn(incomplete)
-                .thenReturn(null);
+        stubClaims(incomplete);
 
         service.syncRoom(ROOM);
 
@@ -156,10 +160,7 @@ class PersistServiceTest {
 
     @Test
     void syncRoom_dynamoFailure_continuesWithNextMessage() {
-        when(listOps.leftPop("room:" + ROOM + ":to_persist"))
-                .thenReturn(MSG_JSON)
-                .thenReturn(MSG_JSON)
-                .thenReturn(null);
+        stubClaims(MSG_JSON, MSG_JSON);
         doThrow(new RuntimeException("DynamoDB unavailable"))
                 .doNothing()
                 .when(messageRepository).save(any());
@@ -171,18 +172,53 @@ class PersistServiceTest {
     }
 
     @Test
+    void syncRoom_dynamoFailure_leavesMessageInProcessingForRetry() {
+        stubClaims(MSG_JSON);
+        doThrow(new RuntimeException("DynamoDB unavailable")).when(messageRepository).save(any());
+
+        service.syncRoom(ROOM);
+
+        // Not removed from processing — a crash or transient failure here must not drop the
+        // message; the next tick's recoverOrphans() retries it instead.
+        verify(listOps, never()).remove(eq(PROCESSING_KEY), anyLong(), any());
+    }
+
+    @Test
     void syncRoom_respectsBatchSize() {
         // Default batch size is 100; stub always returns a message
         // but we can't easily test the hard limit without reflection.
         // Instead verify the loop stops at null (normal exit).
-        when(listOps.leftPop("room:" + ROOM + ":to_persist"))
-                .thenReturn(MSG_JSON)
-                .thenReturn(MSG_JSON)
-                .thenReturn(MSG_JSON)
-                .thenReturn(null);
+        stubClaims(MSG_JSON, MSG_JSON, MSG_JSON);
 
         service.syncRoom(ROOM);
 
         verify(messageRepository, times(3)).save(any());
+    }
+
+    // ── recoverOrphans ──────────────────────────────────────────────────────────
+
+    @Test
+    void syncRoom_orphansFromPreviousCrash_areMovedBackBeforeClaimingNew() {
+        // Processing still has 2 messages left over from a run that crashed before
+        // confirming them — syncRoom must recover those first.
+        when(listOps.size(PROCESSING_KEY)).thenReturn(2L);
+        when(listOps.move(PROCESSING_KEY, Direction.RIGHT, SOURCE_KEY, Direction.LEFT))
+                .thenReturn(MSG_JSON)
+                .thenReturn(MSG_JSON);
+        stubClaims(); // nothing new to claim in this test, just verifying recovery ran
+
+        service.syncRoom(ROOM);
+
+        verify(listOps, times(2)).move(PROCESSING_KEY, Direction.RIGHT, SOURCE_KEY, Direction.LEFT);
+    }
+
+    @Test
+    void syncRoom_noOrphans_skipsRecovery() {
+        when(listOps.size(PROCESSING_KEY)).thenReturn(0L);
+        stubClaims();
+
+        service.syncRoom(ROOM);
+
+        verify(listOps, never()).move(PROCESSING_KEY, Direction.RIGHT, SOURCE_KEY, Direction.LEFT);
     }
 }

@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.connection.RedisListCommands.Direction;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -18,8 +19,17 @@ import java.util.UUID;
  * Drains the Redis persist queue into DynamoDB on a fixed schedule.
  *
  * Redis keys (written by ws-server, same layout as Go version):
- *   rooms:active                  — Set of room IDs that have received messages
- *   room:{roomId}:to_persist      — List of raw JSON messages (RPush by ws-server, LPop here)
+ *   rooms:active                    — Set of room IDs that have received messages
+ *   room:{roomId}:to_persist        — List of raw JSON messages (RPush by ws-server)
+ *   room:{roomId}:persist_processing — List: messages currently being written to DynamoDB
+ *                                      (P4 — tmp_doc/05 Track 1). A message sits here only
+ *                                      between being claimed off to_persist and its DynamoDB
+ *                                      write being confirmed; a crash in that window leaves
+ *                                      it here instead of dropping it, and the next tick's
+ *                                      recoverOrphans() puts it back at the front of
+ *                                      to_persist for a retry. A retry can only ever produce
+ *                                      a duplicate DynamoDB row (idempotent SK absorbs it),
+ *                                      never data loss.
  *
  * Mirrors Go persist/persist.go: StartRedisToDBSyncLoop → syncAllRooms → syncRoomMessages.
  */
@@ -69,15 +79,20 @@ public class PersistService {
     }
 
     /**
-     * Pops up to {@code batchSize} messages from the room's persist queue and saves each to DynamoDB.
-     * Uses LPop (FIFO — messages were RPush'd by the ws-server) to preserve chronological order.
+     * Claims up to {@code batchSize} messages from the room's persist queue (LMOVE into
+     * persist_processing, not a destructive pop) and saves each to DynamoDB, removing it
+     * from persist_processing only once the write is confirmed. Also recovers any orphans
+     * a previous crashed run left behind before claiming anything new.
      */
     void syncRoom(String roomId) {
-        String key = "room:" + roomId + ":to_persist";
-        int saved = 0;
+        String sourceKey = "room:" + roomId + ":to_persist";
+        String processingKey = "room:" + roomId + ":persist_processing";
 
+        recoverOrphans(roomId, sourceKey, processingKey);
+
+        int saved = 0;
         for (int i = 0; i < batchSize; i++) {
-            String json = redis.opsForList().leftPop(key);
+            String json = redis.opsForList().move(sourceKey, Direction.LEFT, processingKey, Direction.RIGHT);
             if (json == null) break;
 
             try {
@@ -90,13 +105,37 @@ public class PersistService {
                     log.warn("Skipping malformed message for room [{}]: {}", roomId, json);
                     metrics.messageMalformed();
                 }
+                // Parsed and handled (saved or deliberately skipped as malformed) with no
+                // exception — safe to drop from processing either way.
+                redis.opsForList().remove(processingKey, 1, json);
             } catch (Exception e) {
+                // Left in processingKey on purpose: a transient DynamoDB failure (or a crash
+                // right here) must not silently drop the message — recoverOrphans() on the
+                // next tick retries it before anything newer.
                 log.error("Failed to parse/save message for room [{}]: {}", roomId, e.getMessage());
             }
         }
 
         if (saved > 0) {
             log.info("Persisted {} message(s) for room [{}]", saved, roomId);
+        }
+    }
+
+    /**
+     * Moves anything left in persist_processing back to the front of to_persist, in its
+     * original order, so it's retried before anything newer. Under normal operation
+     * persist_processing is always empty by the time a tick finishes (every claimed message
+     * is removed on success or logged failure), so this only ever does real work after a
+     * crash left messages claimed-but-unconfirmed.
+     */
+    void recoverOrphans(String roomId, String sourceKey, String processingKey) {
+        Long size = redis.opsForList().size(processingKey);
+        if (size == null || size == 0) return;
+
+        log.warn("Recovering {} orphaned message(s) for room [{}] from a previous run", size, roomId);
+        for (long i = 0; i < size; i++) {
+            String moved = redis.opsForList().move(processingKey, Direction.RIGHT, sourceKey, Direction.LEFT);
+            if (moved == null) break;
         }
     }
 
