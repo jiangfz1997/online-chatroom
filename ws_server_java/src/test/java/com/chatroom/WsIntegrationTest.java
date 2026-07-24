@@ -12,6 +12,8 @@ import org.springframework.data.redis.core.ListOperations;
 import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.ZSetOperations;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -31,12 +33,15 @@ import java.net.http.WebSocket;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -113,6 +118,21 @@ class WsIntegrationTest {
         SetOperations<String, String> setOps = mock(SetOperations.class);
         when(redisTemplate.opsForSet()).thenReturn(setOps);
         org.mockito.Mockito.doReturn(1L).when(setOps).add(anyString(), anyString());
+
+        // zSetOps: recent-message cache (P3 — replaces the old LIST-based cache)
+        ZSetOperations<String, String> zSetOps = mock(ZSetOperations.class);
+        when(redisTemplate.opsForZSet()).thenReturn(zSetOps);
+        when(zSetOps.add(anyString(), anyString(), anyDouble())).thenReturn(true);
+        when(zSetOps.removeRange(anyString(), anyLong(), anyLong())).thenReturn(0L);
+        when(zSetOps.reverseRange(anyString(), anyLong(), anyLong())).thenReturn(Set.of());
+        when(zSetOps.rangeByScore(anyString(), anyDouble(), anyDouble())).thenReturn(Set.of());
+        when(zSetOps.rangeWithScores(anyString(), anyLong(), anyLong())).thenReturn(Set.of());
+
+        // Lua HGET-or-INCR seq assignment: every message id gets a fresh, incrementing seq —
+        // good enough for these tests, none of which exercise the resend/dedup path.
+        java.util.concurrent.atomic.AtomicLong seqCounter = new java.util.concurrent.atomic.AtomicLong(0);
+        when(redisTemplate.<String>execute(any(RedisScript.class), anyList(), any()))
+                .thenAnswer(inv -> seqCounter.incrementAndGet() + ":1");
 
         // expire: always succeed
         when(redisTemplate.expire(anyString(), any())).thenReturn(true);

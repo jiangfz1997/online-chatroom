@@ -162,6 +162,38 @@ class ChatWebSocketHandlerTest {
     }
 
     @Test
+    void handleTextMessage_sync_repliesWithCachedMessagesAndNotTruncated() throws Exception {
+        when(redisService.getMessagesSince("room-1", 5L))
+                .thenReturn(new RedisMessageService.SyncResult(
+                        List.of("{\"seq\":6,\"text\":\"a\"}", "{\"seq\":7,\"text\":\"b\"}"), false));
+
+        handler.afterConnectionEstablished(session);
+        handler.handleTextMessage(session, new TextMessage(
+                "{\"type\":\"sync\",\"roomID\":\"room-1\",\"lastSeq\":5}"));
+
+        verify(session, timeout(1000)).sendMessage(argThat((TextMessage m) -> {
+            String p = m.getPayload();
+            return p.contains("\"type\":\"sync_result\"")
+                    && p.contains("\"truncated\":false")
+                    && p.contains("\"seq\":6")
+                    && p.contains("\"seq\":7");
+        }));
+    }
+
+    @Test
+    void handleTextMessage_sync_truncated_stillRepliesButFlagsFallbackToHistory() throws Exception {
+        when(redisService.getMessagesSince("room-1", 10L))
+                .thenReturn(new RedisMessageService.SyncResult(List.of(), true));
+
+        handler.afterConnectionEstablished(session);
+        handler.handleTextMessage(session, new TextMessage(
+                "{\"type\":\"sync\",\"roomID\":\"room-1\",\"lastSeq\":10}"));
+
+        verify(session, timeout(1000)).sendMessage(argThat((TextMessage m) ->
+                m.getPayload().contains("\"type\":\"sync_result\"") && m.getPayload().contains("\"truncated\":true")));
+    }
+
+    @Test
     void handleTextMessage_unknownType_ignored() throws Exception {
         handler.afterConnectionEstablished(session);
 

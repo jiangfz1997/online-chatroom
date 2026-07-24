@@ -7,6 +7,7 @@ import com.chatroom.repository.MessageRepository;
 import com.chatroom.service.RedisMessageService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
@@ -107,6 +108,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                 switch (type) {
                     case "message"       -> handleBroadcastMessage(client, base);
                     case "fetch_history" -> handleFetchHistory(client, base);
+                    case "sync"          -> handleSync(client, base);
                     default              -> log.warn("Unknown message type [{}] from user [{}]", type, client.getUsername());
                 }
             } catch (Exception e) {
@@ -240,6 +242,42 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             client.send(objectMapper.writeValueAsString(resp));
         } catch (Exception e) {
             log.error("Failed to serialize history response: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Handles a client's post-reconnect (or live-gap) resume request: {@code {type:"sync",
+     * roomID, lastSeq}}. Replays whatever the recent-message ZSet cache can supply above
+     * lastSeq; if the cache's own retention window already evicted part of the gap
+     * ({@code truncated:true}), the client falls back to its existing fetch_history
+     * time-pagination path to make a best-effort attempt at the rest (see tmp_doc/05 P3 —
+     * exact seq-indexed DynamoDB backfill is explicitly out of scope).
+     */
+    private void handleSync(ClientSession client, JsonNode req) {
+        String roomId = req.path("roomID").asText(client.getRoomId());
+        long lastSeq = req.path("lastSeq").asLong(0);
+
+        RedisMessageService.SyncResult sync = redisService.getMessagesSince(roomId, lastSeq);
+
+        ArrayNode messages = objectMapper.createArrayNode();
+        for (String json : sync.messages()) {
+            try {
+                messages.add(objectMapper.readTree(json));
+            } catch (Exception e) {
+                log.warn("Skipping malformed cached message during sync for room [{}]: {}", roomId, e.getMessage());
+            }
+        }
+
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("type",      "sync_result");
+        resp.put("roomID",    roomId);
+        resp.put("messages",  messages);
+        resp.put("truncated", sync.truncated());
+
+        try {
+            client.send(objectMapper.writeValueAsString(resp));
+        } catch (Exception e) {
+            log.error("Failed to serialize sync response: {}", e.getMessage());
         }
     }
 }

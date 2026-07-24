@@ -83,28 +83,31 @@ public class ChatMessageConsumer {
 
             log.info("Kafka message from server [{}] for room [{}]", senderServerId, roomId);
 
-            // Save to Redis (dedup Set on message id ensures only one server stores per message;
-            // deduping on the id rather than sentAt avoids false-positive collisions when two
-            // distinct messages land in the same millisecond). A false return means this id was
-            // already processed — a client-side resend (the sender didn't get an ack in time and
-            // retried the same clientMsgId) or Kafka redelivery — so broadcasting/routing again
-            // would just double-deliver an already-delivered message; skip both.
-            boolean firstTimeSeen = redisService.saveMessage(roomId, messageId, json);
-            if (!firstTimeSeen) {
-                log.debug("Duplicate message id={} for room [{}], skipping broadcast/dispatch", messageId, roomId);
+            // Assign (or look up) this room's per-message seq — the Lua HGET-or-INCR script
+            // doubles as dedup on message id, deduping on the id rather than sentAt to avoid
+            // false-positive collisions when two distinct messages land in the same millisecond.
+            // isNew=false means this id was already processed — a client-side resend (the sender
+            // didn't get an ack in time and retried the same clientMsgId) or Kafka redelivery —
+            // so broadcasting/routing/persisting again would just double-deliver an
+            // already-delivered message; skip all three.
+            RedisMessageService.SaveResult saved = redisService.saveMessage(roomId, messageId, json);
+            if (!saved.isNew()) {
+                log.debug("Duplicate message id={} for room [{}] (seq={}), skipping broadcast/dispatch",
+                        messageId, roomId, saved.seq());
                 return;
             }
+            String jsonWithSeq = saved.json();
 
             // No local broadcast happens at send time anymore (see ChatWebSocketHandler) — this
             // consume() call is the ONE path every client, including the original sender, gets
             // its message through. Delivering straight to this instance's own local room here
             // avoids an unnecessary self-Pub/Sub round trip through Redis.
             if (hub.hasRoom(roomId)) {
-                hub.broadcast(roomId, json);
+                hub.broadcast(roomId, jsonWithSeq);
             }
 
             // Route to whichever OTHER instances have local clients in this room.
-            routingService.dispatch(roomId, json);
+            routingService.dispatch(roomId, jsonWithSeq);
         } finally {
             metrics.stopKafkaConsume(sample);
         }

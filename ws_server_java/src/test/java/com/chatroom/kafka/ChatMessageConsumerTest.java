@@ -51,7 +51,8 @@ class ChatMessageConsumerTest {
                 new WsMetrics(new SimpleMeterRegistry()));
         // Default: a fresh (non-duplicate) message, no local room — most tests only care
         // about dispatch(); the dedup-gating and local-broadcast behavior get their own tests.
-        when(redisService.saveMessage(anyString(), anyString(), anyString())).thenReturn(true);
+        when(redisService.saveMessage(anyString(), anyString(), anyString()))
+                .thenReturn(new RedisMessageService.SaveResult(true, 1L, "{\"seq\":1}"));
         when(hub.hasRoom(anyString())).thenReturn(false);
     }
 
@@ -78,6 +79,19 @@ class ChatMessageConsumerTest {
         // the same sentAt millisecond, so the id is what must be passed through.
         verify(redisService).saveMessage(eq("room-1"), eq("msg-id-1"), anyString());
         verify(routingService).dispatch(eq("room-1"), anyString());
+    }
+
+    @Test
+    void consume_dispatchesSeqEmbeddedJson_notOriginal() {
+        // The consumer must broadcast/dispatch RedisMessageService's seq-embedded copy, not
+        // the raw Kafka payload — otherwise reconnecting clients would never see a seq at all.
+        when(redisService.saveMessage(anyString(), anyString(), anyString()))
+                .thenReturn(new RedisMessageService.SaveResult(true, 42L, "{\"seq\":42,\"text\":\"hi\"}"));
+        var record = makeRecord("room-1", "msg-id-1", "2024-01-01T10:00:00Z", OTHER_SERVER);
+
+        consumer.consume(record);
+
+        verify(routingService).dispatch(eq("room-1"), eq("{\"seq\":42,\"text\":\"hi\"}"));
     }
 
     @Test
@@ -114,7 +128,8 @@ class ChatMessageConsumerTest {
     void consume_duplicateMessageId_skipsLocalBroadcastAndDispatch() {
         // A duplicate (client resend after a slow ack, or Kafka redelivery) must not be
         // broadcast/routed again — every room member would see the message twice.
-        when(redisService.saveMessage(anyString(), anyString(), anyString())).thenReturn(false);
+        when(redisService.saveMessage(anyString(), anyString(), anyString()))
+                .thenReturn(new RedisMessageService.SaveResult(false, 1L, null));
         when(hub.hasRoom("room-1")).thenReturn(true);
         var record = makeRecord("room-1", "msg-id-1", "2024-01-01T10:00:00Z", OTHER_SERVER);
 

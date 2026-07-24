@@ -21,6 +21,12 @@ const gapOwn = count('chat_gap_detected_own') || 0;
 // itself gave up on after exhausting all resends, distinct from what OTHER members
 // observed missing (gapOther/gapOwn).
 const giveUp = count('chat_resend_giveup');
+// Only present in P3+ runs: gap measured against the server's room-wide seq (not the
+// per-sender client seq above), and how many times a VU had to reconnect + how many
+// sync replies came back truncated (recent-cache retention window too short for the gap).
+const roomSeqGap = count('chat_room_seq_gap') || 0;
+const reconnectCount = count('chat_reconnect_count') || 0;
+const syncTruncated = count('chat_sync_truncated') || 0;
 
 if (sent === null) {
   console.log('(no chat_messages_sent metric found in summary.json -- not a reliability scenario run)');
@@ -35,3 +41,4 @@ console.log(`cross-instance loss rate ~= ${(lossRate * 100).toFixed(2)}%`);
 if (giveUp !== null) {
   console.log(`resend_giveup=${giveUp} (sender gave up after ${giveUp} messages' worth of retries)`);
 }
+console.log(`room_seq_gap=${roomSeqGap} reconnect_count=${reconnectCount} sync_truncated=${syncTruncated}`);

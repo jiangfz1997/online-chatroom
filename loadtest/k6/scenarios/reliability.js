@@ -1,4 +1,4 @@
-// Reliability / fault-injection scenario (tmp_doc/05 §Track 1, P0-P2): same steady
+// Reliability / fault-injection scenario (tmp_doc/05 §Track 1, P0-P3): same steady
 // per-VU traffic pattern as baseline.js, but each message carries a per-sender
 // monotonic `seq` so that message loss caused by a fault injected mid-run (ws2
 // restart / redis restart / kafka stop-start — orchestrated by run.sh's FAULT env
@@ -20,6 +20,15 @@
 // not just "does removing local broadcast make a single unretried send more fragile"
 // (it does — see the rel-kafka-stop-long-p2-01 finding — the resend logic is what's
 // supposed to make up for that).
+//
+// Since P3 (tmp_doc/05), every message also carries a room-wide (not per-sender) `seq`
+// assigned by the server, and this scenario mirrors Chatroom.vue's reconnect: on an
+// unexpected ws close, it reconnects with exponential backoff + jitter (1s -> 30s cap)
+// and sends {type:'sync', roomID, lastSeq} so the server can replay whatever its
+// recent-message cache still has for the gap. `chat_room_seq_gap` is the P3-era
+// verification signal: with reconnect+sync working, it should trend to 0 even across
+// a ws-instance restart, which is exactly the case P2's real-time resend alone cannot
+// cover (a resend only helps if the socket is still open to receive the ack).
 //
 // This scenario intentionally has no pass/fail thresholds: it's meant to be run
 // once per FAULT value and compared, not judged pass/fail on a single run.
@@ -58,9 +67,21 @@ const gapDetectedOwn = new Counter('chat_gap_detected_own');
 // the client-side equivalent of "truly gave up", distinct from gapDetected* (which is
 // what OTHER room members observed missing).
 const resendGiveUp = new Counter('chat_resend_giveup');
+// P3: gap measured against the server's room-wide seq (not the per-sender client seq
+// above) — the authoritative "did this client ever see every message in the room"
+// signal, since it also gets filled in by sync_result replay after a reconnect.
+const roomSeqGap = new Counter('chat_room_seq_gap');
+// How many reconnect attempts fired (WS closed unexpectedly mid-hold).
+const reconnectCount = new Counter('chat_reconnect_count');
+// A sync reply arrived flagged truncated=true — the recent-cache's own retention
+// window had already evicted part of the gap. Not acted on further in this scenario
+// (no fetch_history fallback here); just a diagnostic signal.
+const syncTruncated = new Counter('chat_sync_truncated');
 
 const RESEND_TIMEOUT_MS = 5000;
 const MAX_RESENDS = 3;
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_CAP_MS = 30000;
 
 export const options = {
   scenarios: {
@@ -98,14 +119,22 @@ export default function (data) {
   const wsBase = __VU % 2 === 0 ? WS2_URL : WS1_URL;
   const url = `${wsBase}/ws/${data.roomId}?token=${user.token}`;
 
-  const ws = new WebSocket(url);
   let seq = 0;
   const lastSeqBySender = {};
   // clientMsgId -> { text, retries, timerId } — mirrors Chatroom.vue's pendingByRoom.
   const pending = {};
+  // Room-wide seq (P3) — survives reconnects, drives the sync/gap-pull request.
+  let lastRoomSeq = 0;
+  let reconnectAttempt = 0;
+  let sendIntervalId = null;
+  let finalCloseScheduled = false;
+  let currentWs = null;
+  const endAt = Date.now() + CONN_HOLD_MS;
 
   function sendEnvelope(id, text, retries) {
-    ws.send(JSON.stringify({ type: 'message', id, text }));
+    if (currentWs) {
+      currentWs.send(JSON.stringify({ type: 'message', id, text }));
+    }
     const timerId = setTimeout(() => {
       if (retries >= MAX_RESENDS) {
         delete pending[id];
@@ -125,42 +154,17 @@ export default function (data) {
     }
   }
 
-  ws.addEventListener('open', () => {
-    const intervalId = setInterval(() => {
-      seq += 1;
-      const id = `${__VU}-${seq}`;
-      const inner = JSON.stringify({ vu: __VU, seq, clientSendTs: Date.now() });
-      sendEnvelope(id, inner, 0);
-      messagesSent.add(1);
-    }, MSG_INTERVAL_MS);
+  function sendNext() {
+    seq += 1;
+    const id = `${__VU}-${seq}`;
+    const inner = JSON.stringify({ vu: __VU, seq, clientSendTs: Date.now() });
+    sendEnvelope(id, inner, 0);
+    messagesSent.add(1);
+  }
 
-    setTimeout(() => {
-      clearInterval(intervalId);
-      ws.close();
-    }, CONN_HOLD_MS);
-  });
-
-  ws.addEventListener('message', (event) => {
-    let envelope;
-    try {
-      envelope = JSON.parse(event.data);
-    } catch (e) {
-      return; // fetch_history / non-JSON-text payloads — not what this scenario measures
-    }
-
-    if (envelope.type === 'ack') {
-      // Reached Kafka — stop resending. Still waiting on the full round-trip 'message'
-      // below for the actual delivery-confirmed gap-tracking.
-      clearPending(envelope.id);
-      return;
-    }
-    if (envelope.type === 'send_error') {
-      // Let the resend timer already scheduled by sendEnvelope() handle it — same
-      // "wait for the timeout, then resend" behavior as Chatroom.vue's simpler model.
-      return;
-    }
-    if (envelope.type !== 'message') return;
-
+  // Shared by both a live 'message' envelope and each item replayed inside a
+  // 'sync_result' — same shape either way (server sends the exact cached envelope).
+  function applyIncoming(envelope, isReplay) {
     let inner;
     try {
       inner = JSON.parse(envelope.text);
@@ -171,7 +175,21 @@ export default function (data) {
 
     if (envelope.id) clearPending(envelope.id);
 
-    e2eLatency.add(Date.now() - inner.clientSendTs);
+    if (typeof envelope.seq === 'number') {
+      if (envelope.seq > lastRoomSeq + 1) {
+        roomSeqGap.add(envelope.seq - lastRoomSeq - 1);
+      }
+      if (envelope.seq > lastRoomSeq) {
+        lastRoomSeq = envelope.seq;
+      }
+    }
+
+    // A replayed (sync_result) message can be arbitrarily old — recording it against
+    // e2e latency would swamp that trend with outage-duration-sized numbers, which
+    // measures something different (recovery time) from single-hop delivery latency.
+    if (!isReplay) {
+      e2eLatency.add(Date.now() - inner.clientSendTs);
+    }
 
     const isOwn = inner.vu === __VU;
     if (isOwn) {
@@ -192,9 +210,85 @@ export default function (data) {
     if (last === undefined || inner.seq > last) {
       lastSeqBySender[inner.vu] = inner.seq;
     }
-  });
+  }
 
-  ws.addEventListener('error', (e) => {
-    console.error(`VU ${__VU}: WebSocket error — ${e.error}`);
-  });
+  function scheduleReconnect() {
+    const remaining = endAt - Date.now();
+    if (remaining <= 0) return;
+    reconnectAttempt += 1;
+    reconnectCount.add(1);
+    const base = Math.min(RECONNECT_BASE_MS * 2 ** (reconnectAttempt - 1), RECONNECT_CAP_MS);
+    const jittered = Math.round(base * (0.75 + Math.random() * 0.5));
+    const delay = Math.min(remaining, Math.min(RECONNECT_CAP_MS, jittered));
+    setTimeout(connect, delay);
+  }
+
+  function connect() {
+    const ws = new WebSocket(url);
+    currentWs = ws;
+
+    ws.addEventListener('open', () => {
+      reconnectAttempt = 0;
+
+      // Only a reconnect has a nonzero lastRoomSeq (a fresh first connect relies on
+      // the server's normal recent-history push instead) — ask it to replay the gap.
+      if (lastRoomSeq > 0) {
+        ws.send(JSON.stringify({ type: 'sync', roomID: data.roomId, lastSeq: lastRoomSeq }));
+      }
+
+      if (!sendIntervalId) {
+        sendIntervalId = setInterval(sendNext, MSG_INTERVAL_MS);
+      }
+      if (!finalCloseScheduled) {
+        finalCloseScheduled = true;
+        const remaining = Math.max(0, endAt - Date.now());
+        setTimeout(() => {
+          clearInterval(sendIntervalId);
+          if (currentWs) currentWs.close();
+        }, remaining);
+      }
+    });
+
+    ws.addEventListener('message', (event) => {
+      let envelope;
+      try {
+        envelope = JSON.parse(event.data);
+      } catch (e) {
+        return; // fetch_history / non-JSON-text payloads — not what this scenario measures
+      }
+
+      if (envelope.type === 'ack') {
+        // Reached Kafka — stop resending. Still waiting on the full round-trip 'message'
+        // below for the actual delivery-confirmed gap-tracking.
+        clearPending(envelope.id);
+        return;
+      }
+      if (envelope.type === 'send_error') {
+        // Let the resend timer already scheduled by sendEnvelope() handle it — same
+        // "wait for the timeout, then resend" behavior as Chatroom.vue's simpler model.
+        return;
+      }
+      if (envelope.type === 'sync_result') {
+        if (envelope.truncated) syncTruncated.add(1);
+        const messages = Array.isArray(envelope.messages) ? envelope.messages : [];
+        for (const raw of messages) {
+          applyIncoming(raw, true);
+        }
+        return;
+      }
+      if (envelope.type !== 'message') return;
+
+      applyIncoming(envelope, false);
+    });
+
+    ws.addEventListener('close', () => {
+      scheduleReconnect();
+    });
+
+    ws.addEventListener('error', (e) => {
+      console.error(`VU ${__VU}: WebSocket error — ${e.error}`);
+    });
+  }
+
+  connect();
 }

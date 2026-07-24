@@ -19,4 +19,9 @@ public class RawMessage {
 
     @JsonProperty("sentAt")
     private String timestamp;
+
+    // Per-room sequence number (P3 — tmp_doc/05 Track 1). Absent for messages produced by
+    // a pre-P3 client/ws-server during a rolling deploy; not indexed in DynamoDB (SK stays
+    // {timestamp}#{id}), just carried through for debugging/future backfill.
+    private Long seq;
 }
