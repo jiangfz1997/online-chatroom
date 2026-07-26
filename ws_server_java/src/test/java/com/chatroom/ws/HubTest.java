@@ -1,6 +1,8 @@
 package com.chatroom.ws;
 
+import com.chatroom.metrics.WsMetrics;
 import com.chatroom.redis.RoomOccupancyListener;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.WebSocketSession;
@@ -23,7 +25,7 @@ class HubTest {
     @BeforeEach
     void setup() {
         occupancyListener = mock(RoomOccupancyListener.class);
-        hub = new Hub(occupancyListener);
+        hub = new Hub(occupancyListener, new WsMetrics(new SimpleMeterRegistry()));
         hub.setServerId("test-server");
     }
 

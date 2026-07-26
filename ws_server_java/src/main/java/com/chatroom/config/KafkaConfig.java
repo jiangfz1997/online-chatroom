@@ -11,6 +11,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.*;
+import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -54,6 +58,11 @@ public class KafkaConfig {
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        // Manual ack (below, via AckMode.RECORD): only commit an offset once consume()
+        // actually returns without throwing, so a failure leaves the record uncommitted
+        // and eligible for the error handler's retry/redelivery instead of being silently
+        // skipped by a timer-driven auto-commit that doesn't know processing failed.
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         return new DefaultKafkaConsumerFactory<>(props);
     }
 
@@ -62,6 +71,18 @@ public class KafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory());
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
+
+        // Retries with backoff before giving up (tmp_doc/04 Position C): today a failed
+        // record (e.g. Redis briefly down) gets a couple of instant retries then is
+        // silently skipped. Blocking this partition for up to ~30s while retrying gives
+        // a brief outage a real chance to recover instead of being treated as permanent.
+        // If it's still failing after 5 attempts, publish to "chat_messages.DLT" (the
+        // recoverer's default naming) instead of vanishing with no trace.
+        var recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate());
+        var errorHandler = new DefaultErrorHandler(recoverer, new ExponentialBackOffWithMaxRetries(5));
+        factory.setCommonErrorHandler(errorHandler);
+
         return factory;
     }
 
@@ -73,6 +94,9 @@ public class KafkaConfig {
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.ACKS_CONFIG, "all");
         props.put(ProducerConfig.RETRIES_CONFIG, 5);
+        // Prevents duplicate records landing in the log if a retry above races with the
+        // broker actually having received a prior attempt.
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         return new DefaultKafkaProducerFactory<>(props);
     }
 

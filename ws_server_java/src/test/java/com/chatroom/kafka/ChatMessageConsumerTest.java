@@ -1,8 +1,11 @@
 package com.chatroom.kafka;
 
+import com.chatroom.metrics.WsMetrics;
 import com.chatroom.redis.RedisRoutingService;
 import com.chatroom.service.RedisMessageService;
+import com.chatroom.ws.Hub;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.header.internals.RecordHeaders;
@@ -12,6 +15,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
@@ -23,13 +28,17 @@ import static org.mockito.Mockito.*;
  * Under the shared-consumer-group design, this instance may receive a message that
  * was originally produced by any ws-server instance (not just itself), because Kafka's
  * partition assignment — not the producing server's identity — decides who processes it.
- * The consumer's only job is: save to Redis, then hand off routing to RedisRoutingService.
+ * The consumer's job: save to Redis (skip everything else on a duplicate), broadcast
+ * locally if this instance has clients in the room, and hand off routing to
+ * RedisRoutingService for every other instance that does.
  */
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class ChatMessageConsumerTest {
 
     @Mock RedisMessageService redisService;
     @Mock RedisRoutingService routingService;
+    @Mock Hub hub;
 
     ChatMessageConsumer consumer;
     ObjectMapper objectMapper = new ObjectMapper();
@@ -38,7 +47,13 @@ class ChatMessageConsumerTest {
 
     @BeforeEach
     void setup() {
-        consumer = new ChatMessageConsumer(redisService, routingService, objectMapper);
+        consumer = new ChatMessageConsumer(redisService, routingService, hub, objectMapper,
+                new WsMetrics(new SimpleMeterRegistry()));
+        // Default: a fresh (non-duplicate) message, no local room — most tests only care
+        // about dispatch(); the dedup-gating and local-broadcast behavior get their own tests.
+        when(redisService.saveMessage(anyString(), anyString(), anyString()))
+                .thenReturn(new RedisMessageService.SaveResult(true, 1L, "{\"seq\":1}"));
+        when(hub.hasRoom(anyString())).thenReturn(false);
     }
 
     private ConsumerRecord<String, String> makeRecord(String roomId, String id, String sentAt,
@@ -56,22 +71,72 @@ class ChatMessageConsumerTest {
     }
 
     @Test
-    void consume_savesToRedisAndDispatchesWithSenderId() {
+    void consume_savesToRedisAndDispatches() {
         var record = makeRecord("room-1", "msg-id-1", "2024-01-01T10:00:00Z", OTHER_SERVER);
         consumer.consume(record);
 
         // Dedup key is the message id, not the timestamp — two distinct messages can share
         // the same sentAt millisecond, so the id is what must be passed through.
         verify(redisService).saveMessage(eq("room-1"), eq("msg-id-1"), anyString());
-        verify(routingService).dispatch(eq("room-1"), anyString(), eq(OTHER_SERVER));
+        verify(routingService).dispatch(eq("room-1"), anyString());
     }
 
     @Test
-    void consume_missingServerIdHeader_dispatchesWithEmptySenderId() {
+    void consume_dispatchesSeqEmbeddedJson_notOriginal() {
+        // The consumer must broadcast/dispatch RedisMessageService's seq-embedded copy, not
+        // the raw Kafka payload — otherwise reconnecting clients would never see a seq at all.
+        when(redisService.saveMessage(anyString(), anyString(), anyString()))
+                .thenReturn(new RedisMessageService.SaveResult(true, 42L, "{\"seq\":42,\"text\":\"hi\"}"));
+        var record = makeRecord("room-1", "msg-id-1", "2024-01-01T10:00:00Z", OTHER_SERVER);
+
+        consumer.consume(record);
+
+        verify(routingService).dispatch(eq("room-1"), eq("{\"seq\":42,\"text\":\"hi\"}"));
+    }
+
+    @Test
+    void consume_missingServerIdHeader_stillDispatches() {
         var record = makeRecord("room-1", "msg-id-1", "2024-01-01T10:00:00Z", null);
         consumer.consume(record);
 
-        verify(routingService).dispatch(eq("room-1"), anyString(), eq(""));
+        verify(routingService).dispatch(eq("room-1"), anyString());
+    }
+
+    @Test
+    void consume_hasLocalRoom_broadcastsLocallyAndDispatches() {
+        when(hub.hasRoom("room-1")).thenReturn(true);
+        var record = makeRecord("room-1", "msg-id-1", "2024-01-01T10:00:00Z", OTHER_SERVER);
+
+        consumer.consume(record);
+
+        verify(hub).broadcast(eq("room-1"), anyString());
+        verify(routingService).dispatch(eq("room-1"), anyString());
+    }
+
+    @Test
+    void consume_noLocalRoom_skipsLocalBroadcastButStillDispatches() {
+        when(hub.hasRoom("room-1")).thenReturn(false);
+        var record = makeRecord("room-1", "msg-id-1", "2024-01-01T10:00:00Z", OTHER_SERVER);
+
+        consumer.consume(record);
+
+        verify(hub, never()).broadcast(anyString(), anyString());
+        verify(routingService).dispatch(eq("room-1"), anyString());
+    }
+
+    @Test
+    void consume_duplicateMessageId_skipsLocalBroadcastAndDispatch() {
+        // A duplicate (client resend after a slow ack, or Kafka redelivery) must not be
+        // broadcast/routed again — every room member would see the message twice.
+        when(redisService.saveMessage(anyString(), anyString(), anyString()))
+                .thenReturn(new RedisMessageService.SaveResult(false, 1L, null));
+        when(hub.hasRoom("room-1")).thenReturn(true);
+        var record = makeRecord("room-1", "msg-id-1", "2024-01-01T10:00:00Z", OTHER_SERVER);
+
+        consumer.consume(record);
+
+        verify(hub, never()).broadcast(anyString(), anyString());
+        verify(routingService, never()).dispatch(anyString(), anyString());
     }
 
     @Test
@@ -87,7 +152,7 @@ class ChatMessageConsumerTest {
 
         consumer.consume(record);
 
-        verifyNoInteractions(routingService, redisService);
+        verifyNoInteractions(routingService, redisService, hub);
     }
 
     @Test
@@ -101,7 +166,7 @@ class ChatMessageConsumerTest {
         // Should log error and return without throwing
         consumer.consume(record);
 
-        verifyNoInteractions(routingService, redisService);
+        verifyNoInteractions(routingService, redisService, hub);
     }
 
     @Test
@@ -115,6 +180,6 @@ class ChatMessageConsumerTest {
 
         consumer.consume(record);
 
-        verifyNoInteractions(routingService, redisService);
+        verifyNoInteractions(routingService, redisService, hub);
     }
 }

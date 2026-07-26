@@ -48,17 +48,18 @@ public class RedisRoutingService implements RoomOccupancyListener {
     }
 
     /**
-     * Forward a message to every other instance that currently has local clients
-     * in the room, via each instance's own Pub/Sub channel. The sender is excluded
-     * since it already broadcast locally before this message reached Kafka.
+     * Forward a message to every OTHER instance that currently has local clients in the
+     * room, via each instance's own Pub/Sub channel. This instance's own local delivery
+     * (if it's in the routing set too) is the caller's job via Hub directly — publishing
+     * to our own channel here would be a pointless self round-trip through Redis.
      */
-    public void dispatch(String roomId, String json, String senderServerId) {
+    public void dispatch(String roomId, String json) {
         Set<String> targets = redis.opsForSet().members(routingKey(roomId));
         if (targets == null || targets.isEmpty()) {
             return;
         }
         for (String targetId : targets) {
-            if (targetId.equals(senderServerId)) {
+            if (targetId.equals(serverId)) {
                 continue;
             }
             if (!isAlive(targetId)) {

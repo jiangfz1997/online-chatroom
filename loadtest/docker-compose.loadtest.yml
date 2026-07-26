@@ -1,0 +1,170 @@
+name: loadtest-app
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: loadtest-kafka
+    ports:
+      - "9094:9094"
+    environment:
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_LISTENERS: 'BROKER://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9094'
+      KAFKA_ADVERTISED_LISTENERS: 'BROKER://kafka:9092,EXTERNAL://localhost:9094'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'BROKER:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT'
+      KAFKA_INTER_BROKER_LISTENER_NAME: BROKER
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    networks: [loadtest-net]
+
+  redis:
+    image: redis:latest
+    container_name: loadtest-app-redis
+    ports:
+      - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    networks: [loadtest-net]
+
+  dynamodb-local:
+    image: amazon/dynamodb-local
+    container_name: loadtest-dynamodb
+    ports:
+      - "8000:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    networks: [loadtest-net]
+
+  api-server:
+    build:
+      context: ../api_server_java
+      dockerfile: ../docker/api-server/Dockerfile
+    container_name: loadtest-api-server
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATA_REDIS_HOST: redis
+      AWS_DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_DYNAMODB_REGION: us-west-2
+      JWT_SECRET: ${LOADTEST_JWT_SECRET:-loadtest-dev-secret-do-not-use-in-prod}
+      WS_HOST: ws://localhost:8081
+      JAVA_TOOL_OPTIONS: "-Xmx384m"
+    depends_on:
+      - redis
+      - dynamodb-local
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    networks: [loadtest-net]
+
+  # ws1 + ws2: same image, distinct SERVER_ID/SERVER_PORT — this is the "1 api + 2 ws"
+  # topology the load-test scenarios need to exercise real cross-instance Redis
+  # routing / Kafka fan-out, not just a single instance talking to itself.
+  ws1:
+    build:
+      context: ../ws_server_java
+    container_name: loadtest-ws1
+    ports:
+      - "8081:8081"
+    environment:
+      SERVER_PORT: 8081
+      SERVER_ID: ws-java-1
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      AWS_DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_DYNAMODB_REGION: us-west-2
+      JWT_SECRET: ${LOADTEST_JWT_SECRET:-loadtest-dev-secret-do-not-use-in-prod}
+      JAVA_TOOL_OPTIONS: "-Xmx768m"
+    volumes:
+      - ./logs/ws1:/app/logs
+    depends_on:
+      - kafka
+      - redis
+      - dynamodb-local
+      - api-server
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    networks: [loadtest-net]
+
+  ws2:
+    build:
+      context: ../ws_server_java
+    container_name: loadtest-ws2
+    ports:
+      - "8082:8082"
+    environment:
+      SERVER_PORT: 8082
+      SERVER_ID: ws-java-2
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      AWS_DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_DYNAMODB_REGION: us-west-2
+      JWT_SECRET: ${LOADTEST_JWT_SECRET:-loadtest-dev-secret-do-not-use-in-prod}
+      JAVA_TOOL_OPTIONS: "-Xmx768m"
+    volumes:
+      - ./logs/ws2:/app/logs
+    depends_on:
+      - kafka
+      - redis
+      - dynamodb-local
+      - api-server
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    networks: [loadtest-net]
+
+  persist-worker:
+    build:
+      context: ../persist_worker_java
+    container_name: loadtest-persist-worker
+    ports:
+      - "8090:8090"
+    environment:
+      SPRING_DATA_REDIS_HOST: redis
+      AWS_DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_DYNAMODB_REGION: us-west-2
+      JAVA_TOOL_OPTIONS: "-Xmx384m"
+    volumes:
+      - ./logs/persist-worker:/app/logs
+    depends_on:
+      - redis
+      - dynamodb-local
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    networks: [loadtest-net]
+
+networks:
+  loadtest-net:
+    driver: bridge
+
+# Mutually exclusive with the root docker-compose.yml (both publish 6379/8000/9094) —
+# stop that stack before bringing this one up. api-server/ws1/ws2/persist-worker
+# publish the same host ports (8080/8081/8082/8090) they used as bare `mvn
+# spring-boot:run` processes, so loadtest/docker-compose.obs.yml's Prometheus scrape
+# config (host.docker.internal:8081 etc.) keeps working unchanged.

@@ -97,7 +97,13 @@
                     <span class="msg-name">{{ senderInfo(item.msg.sender).displayName }}</span>
                     <span class="msg-time">{{ formatTime(item.msg.timestamp) }}</span>
                   </div>
-                  <div class="msg-bubble">{{ item.msg.text }}</div>
+                  <div
+                    class="msg-bubble"
+                    :class="{ pending: item.msg.status === 'pending', failed: item.msg.status === 'failed' }"
+                    :title="item.msg.status === 'failed' ? 'Click to resend' : undefined"
+                    @click="item.msg.status === 'failed' && selectedRoom && retryMessage(selectedRoom.id, item.msg.id)"
+                  >{{ item.msg.text }}</div>
+                  <span v-if="item.msg.status === 'failed'" class="msg-status failed">Failed to send · tap to retry</span>
                 </div>
               </div>
             </template>
@@ -295,7 +301,7 @@ const renderItems = computed(() => {
   const list = messages.value
   const items: {
     key: number
-    msg: { sender: string; text: string; timestamp?: string }
+    msg: ChatMessage
     dateLabel: string | null
     showHeader: boolean
     own: boolean
@@ -420,10 +426,109 @@ const chatrooms = ref<{ id: string; name: string; isPrivate: boolean; unread: nu
 const selectedRoom = ref<null | typeof chatrooms.value[0]>(null)
 const showRoomInfo = ref(false)
 const newMessage = ref('')
-const messageMap = ref<Record<string, { sender: string; text: string; timestamp?: string }[]>>({})
+type ChatMessage = {
+  sender: string
+  text: string
+  timestamp?: string
+  id?: string
+  // Set only for messages this client itself sent, while waiting on delivery confirmation.
+  status?: 'pending' | 'failed'
+}
+const messageMap = ref<Record<string, ChatMessage[]>>({})
 const messages = computed(() =>
   selectedRoom.value ? messageMap.value[selectedRoom.value.id] || [] : []
 )
+
+// Outbox for messages awaiting delivery confirmation: roomId -> clientMsgId -> retry state.
+// No local broadcast happens server-side anymore (tmp_doc/05 P2) — every message, including
+// the sender's own copy, arrives back through the same Kafka round trip everyone else's
+// does. If that round trip is slow or the 'ack'/'send_error' response itself gets lost, this
+// resends the exact same id (server-side dedup collapses it, so a resend never shows up as a
+// second bubble for anyone in the room).
+type PendingEntry = { id: string; text: string; timerId: number; retries: number }
+const pendingByRoom = ref<Record<string, Record<string, PendingEntry>>>({})
+const RESEND_TIMEOUT_MS = 5000
+const MAX_RESENDS = 3
+
+// Per-room seq bookkeeping (tmp_doc/05 P3): lets a reconnect (or a live gap spotted mid-
+// session) ask the server for exactly what was missed, instead of just resuming the live
+// stream and silently accepting whatever fell in the crack.
+const lastSeqByRoom = ref<Record<string, number>>({})
+
+function requestSync(roomId: string, lastSeq: number) {
+  const socket = sockets.value[roomId]
+  if (!socket || socket.readyState !== WebSocket.OPEN) return
+  socket.send(JSON.stringify({ type: 'sync', roomID: roomId, lastSeq }))
+}
+
+// Reconnect (tmp_doc/05 裁决5): exponential backoff with jitter, 1s -> 2s -> ... -> 30s cap.
+// `intentionalClose` distinguishes a deliberate close (leaving the room, unmounting) from a
+// dropped connection — only the latter should trigger a reconnect attempt.
+const reconnectAttempts = ref<Record<string, number>>({})
+const reconnectTimers: Record<string, number> = {}
+const intentionalClose = new Set<string>()
+
+function clearReconnectTimer(roomId: string) {
+  const timerId = reconnectTimers[roomId]
+  if (timerId) {
+    window.clearTimeout(timerId)
+    delete reconnectTimers[roomId]
+  }
+}
+
+function scheduleReconnect(roomId: string) {
+  if (!chatrooms.value.some(r => r.id === roomId)) return // user already left this room
+  clearReconnectTimer(roomId)
+  const attempt = (reconnectAttempts.value[roomId] || 0) + 1
+  reconnectAttempts.value[roomId] = attempt
+  const base = Math.min(1000 * 2 ** (attempt - 1), 30000)
+  const delay = Math.min(30000, Math.round(base * (0.75 + Math.random() * 0.5)))
+  reconnectTimers[roomId] = window.setTimeout(() => connectWebSocket(roomId), delay)
+}
+
+function stopResendTimer(roomId: string, id: string | undefined) {
+  if (!id) return
+  const entry = pendingByRoom.value[roomId]?.[id]
+  if (entry) {
+    clearTimeout(entry.timerId)
+    delete pendingByRoom.value[roomId][id]
+  }
+}
+
+function markMessageFailed(roomId: string, id: string | undefined) {
+  if (!id) return
+  const msg = messageMap.value[roomId]?.find(m => m.id === id)
+  if (msg) msg.status = 'failed'
+}
+
+function sendEnvelope(roomId: string, id: string, text: string, retries: number) {
+  const socket = sockets.value[roomId]
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    markMessageFailed(roomId, id)
+    return
+  }
+  socket.send(JSON.stringify({ type: 'message', id, text }))
+
+  const timerId = window.setTimeout(() => {
+    if (retries >= MAX_RESENDS) {
+      markMessageFailed(roomId, id)
+    } else {
+      sendEnvelope(roomId, id, text, retries + 1)
+    }
+  }, RESEND_TIMEOUT_MS)
+
+  if (!pendingByRoom.value[roomId]) pendingByRoom.value[roomId] = {}
+  pendingByRoom.value[roomId][id] = { id, text, timerId, retries }
+}
+
+// Click a failed bubble to resend it (same id — still idempotent server-side).
+const retryMessage = (roomId: string, id: string | undefined) => {
+  if (!id) return
+  const msg = messageMap.value[roomId]?.find(m => m.id === id)
+  if (!msg || msg.status !== 'failed') return
+  msg.status = 'pending'
+  sendEnvelope(roomId, id, msg.text, 0)
+}
 
 // Rooms currently mid-connect. Marked synchronously (before the first await)
 // so a second concurrent call for the same room bails out immediately instead
@@ -458,6 +563,15 @@ const connectWebSocket = async (roomId: string) => {
     socket.onopen = () => {
       socketReadyResolvers[roomId]()
       if (!messageMap.value[roomId]) messageMap.value[roomId] = []
+      reconnectAttempts.value[roomId] = 0
+      clearReconnectTimer(roomId)
+
+      // Only reconnects have a lastSeq (a fresh first connect relies on the server's normal
+      // recent-history push instead) — ask the server to replay whatever it missed.
+      const lastSeq = lastSeqByRoom.value[roomId]
+      if (lastSeq) {
+        requestSync(roomId, lastSeq)
+      }
     }
 
     socket.onmessage = (event) => {
@@ -467,16 +581,81 @@ const connectWebSocket = async (roomId: string) => {
 
         switch (msg.type) {
           case 'message': {
-            const normalizedMsg = {
+            const normalizedMsg: ChatMessage = {
+              id: msg.id,
               sender: msg.sender,
               text: msg.text,
               timestamp: msg.sentAt || msg.timestamp,
-              roomId: msg.roomID || msg.room_id,
             }
-            messageMap.value[roomId].push(normalizedMsg)
+            const list = messageMap.value[roomId]
+            const existingIdx = msg.id ? list.findIndex(m => m.id === msg.id) : -1
+            if (existingIdx !== -1) {
+              // Our own pending/failed placeholder just came back confirmed through the
+              // full round trip (server no longer broadcasts locally at send time — see
+              // tmp_doc/05 P2) — replace it in place instead of showing a duplicate bubble.
+              stopResendTimer(roomId, msg.id)
+              list[existingIdx] = normalizedMsg
+            } else {
+              list.push(normalizedMsg)
+            }
+            if (isAtBottom()) scrollToBottom()
+
+            // seq (tmp_doc/05 P3): a jump bigger than +1 means a live delivery (Pub/Sub,
+            // not Kafka itself) was lost in the gap between the previous message and this
+            // one — ask the server's recent-cache for the missing slice right away instead
+            // of waiting for the next reconnect to notice.
+            if (typeof msg.seq === 'number') {
+              const lastSeq = lastSeqByRoom.value[roomId] || 0
+              if (msg.seq > lastSeq + 1) {
+                requestSync(roomId, lastSeq)
+              }
+              if (msg.seq > lastSeq) {
+                lastSeqByRoom.value[roomId] = msg.seq
+              }
+            }
+            break
+          }
+          case 'sync_result': {
+            // Reply to our own {type:'sync', lastSeq} request (sent on reconnect, or when a
+            // live gap was just detected above) — replay whatever the server's recent-cache
+            // could supply, oldest first.
+            if (msg.roomID && msg.roomID !== roomId) break
+            const list = messageMap.value[roomId]
+            for (const raw of (msg.messages || [])) {
+              const normalized: ChatMessage = {
+                id: raw.id,
+                sender: raw.sender,
+                text: raw.text,
+                timestamp: raw.sentAt || raw.timestamp,
+              }
+              const idx = raw.id ? list.findIndex(m => m.id === raw.id) : -1
+              if (idx !== -1) {
+                list[idx] = normalized
+              } else {
+                list.push(normalized)
+              }
+              if (typeof raw.seq === 'number' && raw.seq > (lastSeqByRoom.value[roomId] || 0)) {
+                lastSeqByRoom.value[roomId] = raw.seq
+              }
+            }
+            if (msg.truncated) {
+              // The cache's own retention window already evicted part of the gap — best
+              // effort only, per tmp_doc/05 P3 (exact seq-indexed DynamoDB backfill is
+              // explicitly out of scope): fall back to the existing time-paginated history.
+              loadHistory(roomId)
+            }
             if (isAtBottom()) scrollToBottom()
             break
           }
+          case 'ack':
+            // Reached Kafka — stop the resend timer. The bubble stays as-is until the
+            // 'message' case above replaces it with the fully round-tripped copy.
+            stopResendTimer(roomId, msg.id)
+            break
+          case 'send_error':
+            stopResendTimer(roomId, msg.id)
+            markMessageFailed(roomId, msg.id)
+            break
           case 'history_result':
             // Handled by fetchHistoryViaWebSocket.
             break
@@ -495,6 +674,9 @@ const connectWebSocket = async (roomId: string) => {
 
     socket.onclose = () => {
       delete sockets.value[roomId]
+      // A deliberate close (leaving the room, unmounting) must not trigger a reconnect.
+      if (intentionalClose.delete(roomId)) return
+      scheduleReconnect(roomId)
     }
   } finally {
     connectingRooms.delete(roomId)
@@ -527,16 +709,27 @@ const sendMessage = () => {
   if (!newMessage.value.trim() || !selectedRoom.value) return
   const roomId = selectedRoom.value.id
   const socket = sockets.value[roomId]
-  if (socket?.readyState === WebSocket.OPEN) {
-    const msg = { type: 'message', sender: username, text: newMessage.value.trim() }
-    socket.send(JSON.stringify(msg))
-    newMessage.value = ''
-    scrollToBottom()
-  }
+  if (socket?.readyState !== WebSocket.OPEN) return
+
+  const id = crypto.randomUUID()
+  const text = newMessage.value.trim()
+  newMessage.value = ''
+
+  // Optimistic pending bubble — the confirmed copy (same id) replaces this once it comes
+  // back through the full Kafka round trip (see the 'message' case in connectWebSocket).
+  if (!messageMap.value[roomId]) messageMap.value[roomId] = []
+  messageMap.value[roomId].push({ id, sender: username, text, timestamp: new Date().toISOString(), status: 'pending' })
+  scrollToBottom()
+
+  sendEnvelope(roomId, id, text, 0)
 }
 
 onBeforeUnmount(() => {
-  Object.values(sockets.value).forEach(s => s.close())
+  Object.entries(sockets.value).forEach(([roomId, s]) => {
+    intentionalClose.add(roomId)
+    clearReconnectTimer(roomId)
+    s.close()
+  })
 })
 
 const logout = async () => {
@@ -699,10 +892,13 @@ const confirmExitChatroom = async () => {
 
     const socket = sockets.value[exitRoomToConfirm.value.id]
     if (socket) {
+      intentionalClose.add(exitRoomToConfirm.value.id)
+      clearReconnectTimer(exitRoomToConfirm.value.id)
       socket.close()
       delete sockets.value[exitRoomToConfirm.value.id]
     }
     delete messageMap.value[exitRoomToConfirm.value.id]
+    delete lastSeqByRoom.value[exitRoomToConfirm.value.id]
 
     if (selectedRoom.value?.id === exitRoomToConfirm.value.id) {
       selectedRoom.value = null
@@ -999,6 +1195,18 @@ const confirmExitChatroom = async () => {
 .msg-row.own .msg-bubble {
   color: var(--on-accent);
   background-image: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+.msg-bubble.pending {
+  opacity: 0.6;
+}
+.msg-bubble.failed {
+  opacity: 0.75;
+  cursor: pointer;
+  outline: 1px solid var(--danger);
+}
+.msg-status.failed {
+  font-size: 11px;
+  color: var(--danger);
 }
 .history-loader {
   text-align: center;

@@ -1,10 +1,12 @@
 package com.chatroom.persist.repository;
 
+import com.chatroom.persist.metrics.PersistMetrics;
 import com.chatroom.persist.model.RawMessage;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -19,7 +21,12 @@ import static org.mockito.Mockito.verify;
 class MessageRepositoryTest {
 
     @Mock DynamoDbClient dynamo;
-    @InjectMocks MessageRepository repository;
+    MessageRepository repository;
+
+    @BeforeEach
+    void setup() {
+        repository = new MessageRepository(dynamo, new PersistMetrics(new SimpleMeterRegistry()));
+    }
 
     @Test
     void save_callsPutItemWithCorrectAttributes() {
@@ -42,6 +49,39 @@ class MessageRepositoryTest {
         assertThat(req.item().get("timestamp")).isEqualTo(AttributeValue.fromS("2024-01-01T10:00:00Z#msg-1"));
         assertThat(req.item().get("sender")).isEqualTo(AttributeValue.fromS("alice"));
         assertThat(req.item().get("text")).isEqualTo(AttributeValue.fromS("hello"));
+    }
+
+    @Test
+    void save_withSeq_includesSeqAsNumericAttribute() {
+        RawMessage msg = new RawMessage();
+        msg.setId("msg-1");
+        msg.setRoomId("room-1");
+        msg.setTimestamp("2024-01-01T10:00:00Z");
+        msg.setSender("alice");
+        msg.setText("hello");
+        msg.setSeq(42L);
+
+        repository.save(msg);
+
+        ArgumentCaptor<PutItemRequest> captor = ArgumentCaptor.forClass(PutItemRequest.class);
+        verify(dynamo).putItem(captor.capture());
+        assertThat(captor.getValue().item().get("seq")).isEqualTo(AttributeValue.fromN("42"));
+    }
+
+    @Test
+    void save_withoutSeq_omitsSeqAttribute() {
+        RawMessage msg = new RawMessage();
+        msg.setId("msg-1");
+        msg.setRoomId("room-1");
+        msg.setTimestamp("2024-01-01T10:00:00Z");
+        msg.setSender("alice");
+        msg.setText("hello");
+
+        repository.save(msg);
+
+        ArgumentCaptor<PutItemRequest> captor = ArgumentCaptor.forClass(PutItemRequest.class);
+        verify(dynamo).putItem(captor.capture());
+        assertThat(captor.getValue().item()).doesNotContainKey("seq");
     }
 
     @Test

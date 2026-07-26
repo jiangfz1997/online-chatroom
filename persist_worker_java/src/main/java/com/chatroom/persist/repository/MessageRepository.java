@@ -1,5 +1,6 @@
 package com.chatroom.persist.repository;
 
+import com.chatroom.persist.metrics.PersistMetrics;
 import com.chatroom.persist.model.RawMessage;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Repository;
@@ -7,6 +8,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -25,23 +27,31 @@ public class MessageRepository {
     private static final String TABLE = "Messages";
 
     private final DynamoDbClient dynamo;
+    private final PersistMetrics metrics;
 
-    public MessageRepository(DynamoDbClient dynamo) {
+    public MessageRepository(DynamoDbClient dynamo, PersistMetrics metrics) {
         this.dynamo = dynamo;
+        this.metrics = metrics;
     }
 
     public void save(RawMessage msg) {
         String sortKey = msg.getTimestamp() + "#" + msg.getId();
+        Map<String, AttributeValue> item = new HashMap<>(Map.of(
+                "room_id",   AttributeValue.fromS(msg.getRoomId()),
+                "timestamp", AttributeValue.fromS(sortKey),
+                "sender",    AttributeValue.fromS(msg.getSender()),
+                "text",      AttributeValue.fromS(msg.getText())
+        ));
+        // Not indexed/queried — carried through only so the persisted row records what seq
+        // it had at write time (see RawMessage.seq); absent for pre-P3 messages.
+        if (msg.getSeq() != null) {
+            item.put("seq", AttributeValue.fromN(String.valueOf(msg.getSeq())));
+        }
         PutItemRequest request = PutItemRequest.builder()
                 .tableName(TABLE)
-                .item(Map.of(
-                        "room_id",   AttributeValue.fromS(msg.getRoomId()),
-                        "timestamp", AttributeValue.fromS(sortKey),
-                        "sender",    AttributeValue.fromS(msg.getSender()),
-                        "text",      AttributeValue.fromS(msg.getText())
-                ))
+                .item(item)
                 .build();
-        dynamo.putItem(request);
+        metrics.recordDynamoWrite(() -> dynamo.putItem(request));
         log.info("Saved message: room=[{}] sender=[{}] ts=[{}] id=[{}]",
                 msg.getRoomId(), msg.getSender(), msg.getTimestamp(), msg.getId());
     }

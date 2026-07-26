@@ -57,7 +57,7 @@ class RedisRoutingServiceTest {
         when(redis.hasKey("instance:ws-java-2:alive")).thenReturn(true);
         when(redis.hasKey("instance:ws-java-3:alive")).thenReturn(true);
 
-        routingService.dispatch("room-1", "{\"roomID\":\"room-1\"}", SELF);
+        routingService.dispatch("room-1", "{\"roomID\":\"room-1\"}");
 
         verify(redis, never()).convertAndSend(eq("instance:" + SELF + ":messages"), anyString());
         verify(redis).convertAndSend("instance:ws-java-2:messages", "{\"roomID\":\"room-1\"}");
@@ -69,7 +69,7 @@ class RedisRoutingServiceTest {
         when(setOps.members("room:room-1:instances")).thenReturn(Set.of("ws-java-2"));
         when(redis.hasKey("instance:ws-java-2:alive")).thenReturn(false);
 
-        routingService.dispatch("room-1", "{\"roomID\":\"room-1\"}", SELF);
+        routingService.dispatch("room-1", "{\"roomID\":\"room-1\"}");
 
         verify(setOps).remove("room:room-1:instances", "ws-java-2");
         verify(redis, never()).convertAndSend(anyString(), anyString());
@@ -79,7 +79,7 @@ class RedisRoutingServiceTest {
     void dispatch_emptyRoutingSet_doesNothing() {
         when(setOps.members("room:room-1:instances")).thenReturn(Set.of());
 
-        routingService.dispatch("room-1", "{\"roomID\":\"room-1\"}", SELF);
+        routingService.dispatch("room-1", "{\"roomID\":\"room-1\"}");
 
         verify(redis, never()).convertAndSend(anyString(), anyString());
         verify(setOps, never()).remove(anyString(), anyString());

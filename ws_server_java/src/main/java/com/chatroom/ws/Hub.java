@@ -1,5 +1,6 @@
 package com.chatroom.ws;
 
+import com.chatroom.metrics.WsMetrics;
 import com.chatroom.redis.RoomOccupancyListener;
 import lombok.Getter;
 import lombok.Setter;
@@ -26,14 +27,16 @@ public class Hub {
             new ConcurrentHashMap<>();
 
     private final RoomOccupancyListener occupancyListener;
+    private final WsMetrics metrics;
 
     @Getter
     @Setter
     @Value("${server.id}")
     private String serverId;
 
-    public Hub(RoomOccupancyListener occupancyListener) {
+    public Hub(RoomOccupancyListener occupancyListener, WsMetrics metrics) {
         this.occupancyListener = occupancyListener;
+        this.metrics = metrics;
     }
 
     public void joinRoom(String roomId, ClientSession client) {
@@ -50,6 +53,7 @@ public class Hub {
             return r;
         });
         log.info("User [{}] entered room [{}]", client.getUsername(), roomId);
+        metrics.sessionJoined();
         if (wasNewRoom[0]) {
             occupancyListener.onRoomOccupied(roomId);
         }
@@ -57,14 +61,18 @@ public class Hub {
 
     public void leaveRoom(String roomId, ClientSession client) {
         boolean[] becameEmpty = new boolean[1];
+        boolean[] removed = new boolean[1];
         rooms.computeIfPresent(roomId, (k, r) -> {
-            r.remove(client.getSessionId());
+            removed[0] = r.remove(client.getSessionId()) != null;
             if (r.isEmpty()) {
                 becameEmpty[0] = true;
                 return null; // remove the room entry to prevent unbounded map growth
             }
             return r;
         });
+        if (removed[0]) {
+            metrics.sessionLeft();
+        }
         if (becameEmpty[0]) {
             log.info("User [{}] left room [{}]", client.getUsername(), roomId);
             occupancyListener.onRoomVacated(roomId);
@@ -91,8 +99,9 @@ public class Hub {
             log.warn("Broadcast failed: room [{}] not found in hub", roomId);
             return;
         }
-        log.debug("Broadcasting to {} clients in room [{}]", room.size(), roomId);
-        room.values().forEach(client -> client.send(message));
+        int size = room.size();
+        log.debug("Broadcasting to {} clients in room [{}]", size, roomId);
+        metrics.recordBroadcast(size, () -> room.values().forEach(client -> client.send(message)));
     }
 
     /** Returns a snapshot of sessions in a room (for testing / monitoring). */
