@@ -12,6 +12,8 @@ spec:
       labels:
         app: persist-worker
     spec:
+      nodeSelector:
+        workload: apps
       imagePullSecrets:
       - name: ecr-secret
       containers:

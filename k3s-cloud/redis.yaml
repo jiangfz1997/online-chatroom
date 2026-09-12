@@ -12,6 +12,8 @@ spec:
       labels:
         app: redis
     spec:
+      nodeSelector:
+        workload: infra
       containers:
       - name: redis
         image: redis:7-alpine
