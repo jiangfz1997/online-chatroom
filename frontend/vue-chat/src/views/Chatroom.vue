@@ -431,6 +431,10 @@ type ChatMessage = {
   text: string
   timestamp?: string
   id?: string
+  // Per-room sequence number, assigned server-side. Used (not timestamp) as the "load older
+  // messages" pagination cursor — it reflects true arrival order, a per-instance timestamp
+  // doesn't when a room's members are spread across ws-server instances.
+  seq?: number
   // Set only for messages this client itself sent, while waiting on delivery confirmation.
   status?: 'pending' | 'failed'
 }
@@ -586,6 +590,7 @@ const connectWebSocket = async (roomId: string) => {
               sender: msg.sender,
               text: msg.text,
               timestamp: msg.sentAt || msg.timestamp,
+              seq: typeof msg.seq === 'number' ? msg.seq : undefined,
             }
             const list = messageMap.value[roomId]
             const existingIdx = msg.id ? list.findIndex(m => m.id === msg.id) : -1
@@ -627,6 +632,7 @@ const connectWebSocket = async (roomId: string) => {
                 sender: raw.sender,
                 text: raw.text,
                 timestamp: raw.sentAt || raw.timestamp,
+                seq: typeof raw.seq === 'number' ? raw.seq : undefined,
               }
               const idx = raw.id ? list.findIndex(m => m.id === raw.id) : -1
               if (idx !== -1) {
@@ -799,10 +805,10 @@ const loadHistory = async (roomId: string) => {
   loadingHistory.value = true
 
   const existing = messageMap.value[roomId] || []
-  const lastTimestamp = existing.length > 0 ? existing[0].timestamp : ''
+  const lastSeq = existing.length > 0 ? existing[0].seq : undefined
 
   try {
-    const older = await fetchHistoryViaWebSocket(roomId, lastTimestamp, pageSize)
+    const older = await fetchHistoryViaWebSocket(roomId, lastSeq, pageSize)
     if (!Array.isArray(older) || older.length === 0) {
       noMoreMessages.value[roomId] = true
       return
@@ -814,6 +820,7 @@ const loadHistory = async (roomId: string) => {
         text: msg.text || msg.Text,
         timestamp: msg.timestamp || msg.sentAt,
         roomId: msg.room_id || msg.roomID,
+        seq: typeof msg.seq === 'number' ? msg.seq : undefined,
       }))
       .filter(msg => typeof msg.text === 'string' && typeof msg.sender === 'string')
 
@@ -825,7 +832,7 @@ const loadHistory = async (roomId: string) => {
   }
 }
 
-function fetchHistoryViaWebSocket(roomId: string, before: string | undefined, limit: number): Promise<any[]> {
+function fetchHistoryViaWebSocket(roomId: string, before: number | undefined, limit: number): Promise<any[]> {
   return new Promise((resolve, reject) => {
     const socket = sockets.value[roomId]
     if (!socket) {

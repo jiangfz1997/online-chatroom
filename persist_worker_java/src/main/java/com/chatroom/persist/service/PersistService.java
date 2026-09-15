@@ -156,6 +156,7 @@ public class PersistService {
                 && msg.getTimestamp() != null && !msg.getTimestamp().isBlank()
                 && msg.getId() != null && !msg.getId().isBlank()
                 && msg.getSender() != null
-                && msg.getText() != null;
+                && msg.getText() != null
+                && msg.getSeq() != null;
     }
 }

@@ -1,8 +1,6 @@
 package com.chatroom.service;
 
 import com.chatroom.metrics.WsMetrics;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -35,25 +33,47 @@ import java.util.Set;
 public class RedisMessageService {
 
     /**
-     * Atomically assigns (or looks up) the per-room seq for a message id: HGET-or-INCR.
-     * This must be a single Lua script, not a check-then-increment done from Java — a client
-     * resend and Kafka's own at-least-once redelivery both replay the same message id, and a
-     * non-atomic version would race the two, occasionally handing out two different seqs for
-     * the same id (a permanent hole in the sequence that no client-side resync can repair).
-     * Returns "{seq}:0" for an id already seen (duplicate), "{seq}:1" for a freshly assigned one.
+     * Atomically assigns (or looks up) the per-room seq for a message id AND — only for a
+     * freshly assigned seq — caches the seq-embedded message and queues it for persistence,
+     * all in the same script.
+     *
+     * This used to be two steps: a Lua HGET-or-INCR followed by separate ZADD/RPUSH calls from
+     * Java. That split left a real crash window — if the consumer died between the script
+     * returning and those follow-up calls finishing, Kafka would redeliver (offset never
+     * committed under AckMode.RECORD), but the redelivered attempt would see the seq already
+     * assigned, treat it as a duplicate per the javadoc below, and skip caching/queuing/
+     * broadcasting entirely. The message would keep its seq (a permanent hole) but never reach
+     * recent cache, the persist queue, or any client — a silent, permanent loss that no
+     * client-side resync could detect, since nothing was ever stored to resync from. Folding
+     * the follow-up writes into the same script closes that window: either all of it commits
+     * atomically, or none of it does and Kafka's redelivery will genuinely retry the whole
+     * thing (isNew still true), not just the crashed half.
+     *
+     * ARGV[2] (json) is assumed to be a compact JSON object with no leading whitespace, i.e.
+     * starting with '{' — guaranteed here since it's always produced by our own serializer,
+     * never taken from client input as-is. The seq is embedded via a plain string splice
+     * rather than JSON parsing, which Lua has no built-in support for.
+     *
+     * Returns "{seq}:0:" for an id already seen (duplicate; no json), or
+     * "{seq}:1:{jsonWithSeq}" for a freshly assigned one.
      */
-    private static final RedisScript<String> ASSIGN_SEQ_SCRIPT = RedisScript.of(
+    private static final RedisScript<String> ASSIGN_SEQ_AND_QUEUE_SCRIPT = RedisScript.of(
             "local existing = redis.call('HGET', KEYS[1], ARGV[1])\n" +
                     "if existing then\n" +
-                    "  return existing .. ':0'\n" +
+                    "  return existing .. ':0:'\n" +
                     "end\n" +
                     "local seq = redis.call('INCR', KEYS[2])\n" +
                     "redis.call('HSET', KEYS[1], ARGV[1], seq)\n" +
-                    "return tostring(seq) .. ':1'",
+                    "local jsonWithSeq = '{\"seq\":' .. seq .. ',' .. string.sub(ARGV[2], 2)\n" +
+                    "redis.call('ZADD', KEYS[3], seq, jsonWithSeq)\n" +
+                    "redis.call('ZREMRANGEBYRANK', KEYS[3], 0, -(tonumber(ARGV[4]) + 1))\n" +
+                    "redis.call('EXPIRE', KEYS[3], tonumber(ARGV[5]))\n" +
+                    "redis.call('RPUSH', KEYS[4], jsonWithSeq)\n" +
+                    "redis.call('SADD', KEYS[5], ARGV[3])\n" +
+                    "return tostring(seq) .. ':1:' .. jsonWithSeq",
             String.class);
 
     private final StringRedisTemplate redis;
-    private final ObjectMapper objectMapper;
     private final WsMetrics metrics;
 
     @Value("${redis.message.recent-count:50}")
@@ -62,9 +82,8 @@ public class RedisMessageService {
     @Value("${redis.message.ttl-seconds:86400}")
     private long ttlSeconds;
 
-    public RedisMessageService(StringRedisTemplate redis, ObjectMapper objectMapper, WsMetrics metrics) {
+    public RedisMessageService(StringRedisTemplate redis, WsMetrics metrics) {
         this.redis = redis;
-        this.objectMapper = objectMapper;
         this.metrics = metrics;
     }
 
@@ -94,44 +113,30 @@ public class RedisMessageService {
     private SaveResult doSaveMessage(String roomId, String messageId, String json) {
         String seqHashKey    = "room:" + roomId + ":msgseq";
         String seqCounterKey = "room:" + roomId + ":seqcounter";
+        String recentKey     = "room:" + roomId + ":recent";
+        String persistKey    = "room:" + roomId + ":to_persist";
+        String activeKey     = "rooms:active";
 
-        String result = redis.execute(ASSIGN_SEQ_SCRIPT, List.of(seqHashKey, seqCounterKey), messageId);
-        int sep = result.lastIndexOf(':');
-        long seq = Long.parseLong(result.substring(0, sep));
-        boolean isNew = "1".equals(result.substring(sep + 1));
+        String result = redis.execute(
+                ASSIGN_SEQ_AND_QUEUE_SCRIPT,
+                List.of(seqHashKey, seqCounterKey, recentKey, persistKey, activeKey),
+                messageId, json, roomId, String.valueOf(recentCount), String.valueOf(ttlSeconds));
+
+        // Parsed from the front (not lastIndexOf, as before) — the trailing json payload for a
+        // fresh id can itself contain colons, so only the first two are structural.
+        int firstSep  = result.indexOf(':');
+        int secondSep = result.indexOf(':', firstSep + 1);
+        long seq = Long.parseLong(result.substring(0, firstSep));
+        boolean isNew = "1".equals(result.substring(firstSep + 1, secondSep));
 
         if (!isNew) {
             log.debug("Duplicate message for room [{}] id={} (seq={}), skipping Redis write", roomId, messageId, seq);
             return new SaveResult(false, seq, null);
         }
 
-        String jsonWithSeq = embedSeq(json, seq);
-
-        String recentKey  = "room:" + roomId + ":recent";
-        String persistKey = "room:" + roomId + ":to_persist";
-        String activeKey  = "rooms:active";
-
-        redis.opsForZSet().add(recentKey, jsonWithSeq, seq);
-        // Keep only the newest recentCount entries (ZSet is score-ascending, so rank 0 is oldest).
-        redis.opsForZSet().removeRange(recentKey, 0, -(recentCount + 1));
-        redis.expire(recentKey, Duration.ofSeconds(ttlSeconds));
-
-        redis.opsForList().rightPush(persistKey, jsonWithSeq);
-        redis.opsForSet().add(activeKey, roomId);
-
+        String jsonWithSeq = result.substring(secondSep + 1);
         log.debug("Saved message to Redis for room [{}], seq={}", roomId, seq);
         return new SaveResult(true, seq, jsonWithSeq);
-    }
-
-    private String embedSeq(String json, long seq) {
-        try {
-            ObjectNode node = (ObjectNode) objectMapper.readTree(json);
-            node.put("seq", seq);
-            return objectMapper.writeValueAsString(node);
-        } catch (Exception e) {
-            log.error("Failed to embed seq into message JSON: {}", e.getMessage());
-            return json;
-        }
     }
 
     /**

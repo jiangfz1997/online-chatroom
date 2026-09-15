@@ -16,13 +16,12 @@ import java.util.stream.Collectors;
 
 /**
  * Reads messages from the DynamoDB "Messages" table.
- * Schema: PK=room_id (S), SK=timestamp (S), sender (S), text (S).
- * Mirrors Go's getMessagesFromDynamo in client.go.
+ * Schema: PK=room_id (S), SK=seq (N), sender (S), text (S), timestamp (S).
  *
- * SK is written as "{timestamp}#{id}" (see persist-worker's MessageRepository) to keep it
- * unique across messages that land in the same millisecond. fromMap() strips the "#{id}"
- * suffix back off before handing the timestamp to callers/frontend; rows written before
- * this change have no suffix and pass through unchanged.
+ * SK is the per-room seq assigned atomically at consume time (see RedisMessageService), not
+ * the client-received timestamp — seq reflects true Kafka-consumption order, so history stays
+ * correctly ordered even when a room's members are spread across ws-server instances, where
+ * each instance's own clock (or just submission jitter) can disagree with arrival order.
  */
 @Slf4j
 @Repository
@@ -37,22 +36,28 @@ public class MessageRepository {
     }
 
     /**
-     * Returns up to {@code limit} messages with timestamp < before, newest-first.
-     * Uses #ts alias because "timestamp" is a DynamoDB reserved word.
+     * Returns up to {@code limit} messages with seq < beforeSeq, newest-first. A null
+     * beforeSeq means "start from the newest message" (no upper bound on the key condition).
      */
-    public List<HistoryMessage> getMessagesBefore(String roomId, String before, int limit) {
-        log.info("Fetching messages from DynamoDB | room={} before={} limit={}", roomId, before, limit);
+    public List<HistoryMessage> getMessagesBefore(String roomId, Long beforeSeq, int limit) {
+        log.info("Fetching messages from DynamoDB | room={} beforeSeq={} limit={}", roomId, beforeSeq, limit);
         try {
-            QueryResponse response = dynamo.query(QueryRequest.builder()
+            QueryRequest.Builder query = QueryRequest.builder()
                     .tableName(TABLE)
-                    .keyConditionExpression("room_id = :rid AND #ts < :before")
-                    .expressionAttributeNames(Map.of("#ts", "timestamp"))
-                    .expressionAttributeValues(Map.of(
-                            ":rid",    AttributeValue.fromS(roomId),
-                            ":before", AttributeValue.fromS(before)))
                     .limit(limit)
-                    .scanIndexForward(false)
-                    .build());
+                    .scanIndexForward(false);
+
+            if (beforeSeq != null) {
+                query.keyConditionExpression("room_id = :rid AND seq < :before")
+                        .expressionAttributeValues(Map.of(
+                                ":rid",    AttributeValue.fromS(roomId),
+                                ":before", AttributeValue.fromN(String.valueOf(beforeSeq))));
+            } else {
+                query.keyConditionExpression("room_id = :rid")
+                        .expressionAttributeValues(Map.of(":rid", AttributeValue.fromS(roomId)));
+            }
+
+            QueryResponse response = dynamo.query(query.build());
 
             return response.items().stream()
                     .map(this::fromMap)
@@ -64,15 +69,12 @@ public class MessageRepository {
     }
 
     private HistoryMessage fromMap(Map<String, AttributeValue> item) {
-        String sortKey = item.get("timestamp").s();
-        int idSeparator = sortKey.indexOf('#');
-        String timestamp = idSeparator >= 0 ? sortKey.substring(0, idSeparator) : sortKey;
-
         return new HistoryMessage(
                 item.get("room_id").s(),
-                timestamp,
+                item.get("timestamp").s(),
                 item.get("sender").s(),
-                item.get("text").s()
+                item.get("text").s(),
+                Long.parseLong(item.get("seq").n())
         );
     }
 

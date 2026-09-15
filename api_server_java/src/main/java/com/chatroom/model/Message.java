@@ -12,4 +12,5 @@ public class Message {
     private String timestamp;
     private String sender;
     private String text;
+    private Long seq;
 }

@@ -12,6 +12,8 @@ spec:
       labels:
         app: api-server
     spec:
+      nodeSelector:
+        workload: apps
       imagePullSecrets:
       - name: ecr-secret
       containers:

@@ -1,0 +1,332 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Minimal K3s HPA to AWS Auto Scaling Group validation lab
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetId:
+    Type: AWS::EC2::Subnet::Id
+  K3sToken:
+    Type: String
+    NoEcho: true
+    MinLength: 20
+  UbuntuAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+  ServerInstanceType:
+    Type: String
+    Default: t3.medium
+  WorkerInstanceType:
+    Type: String
+    Default: t3.small
+
+Resources:
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: K3s server for the chatroom autoscaling lab
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-server
+
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: K3s workers for the chatroom autoscaling lab
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-worker
+
+  ServerIngressFromWorkers:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ServerSecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref WorkerSecurityGroup
+
+  WorkerIngressFromServer:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref WorkerSecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref ServerSecurityGroup
+
+  WorkerIngressFromWorkers:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref WorkerSecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref WorkerSecurityGroup
+
+  DynamoDbAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Read and write access to the chatroom DynamoDB tables
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:DeleteItem
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:UpdateItem
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/Users
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/Users/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/Chatrooms
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/Chatrooms/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/UserChatrooms
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/UserChatrooms/index/*
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/Messages
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/Messages/index/*
+
+  ClusterAutoscalerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Minimum permissions used by the Kubernetes Cluster Autoscaler
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:DescribeAutoScalingInstances
+              - autoscaling:DescribeLaunchConfigurations
+              - autoscaling:DescribeScalingActivities
+              - autoscaling:DescribeTags
+              - ec2:DescribeImages
+              - ec2:DescribeInstanceTypes
+              - ec2:DescribeLaunchTemplateVersions
+              - ec2:GetInstanceTypesFromInstanceRequirements
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - autoscaling:SetDesiredCapacity
+              - autoscaling:TerminateInstanceInAutoScalingGroup
+            Resource: !Sub arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/${AWS::StackName}-workers
+            Condition:
+              StringEquals:
+                autoscaling:ResourceTag/k8s.io/cluster-autoscaler/enabled: "true"
+                autoscaling:ResourceTag/k8s.io/cluster-autoscaler/chatroom-autoscaling-lab: owned
+
+  ServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - !Ref DynamoDbAccessPolicy
+        - !Ref ClusterAutoscalerPolicy
+      Tags:
+        - Key: Project
+          Value: chatroom-autoscaling-lab
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - !Ref DynamoDbAccessPolicy
+      Tags:
+        - Key: Project
+          Value: chatroom-autoscaling-lab
+
+  ServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ServerRole
+
+  WorkerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref WorkerRole
+
+  ServerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmi
+      InstanceType: !Ref ServerInstanceType
+      IamInstanceProfile: !Ref ServerInstanceProfile
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        HttpPutResponseHopLimit: 2
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: "0"
+          GroupSet:
+            - !Ref ServerSecurityGroup
+          SubnetId: !Ref PublicSubnetId
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: 16
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-server
+        - Key: Project
+          Value: chatroom-autoscaling-lab
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          exec > >(tee /var/log/chatroom-k3s-bootstrap.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y curl unzip
+
+          IMDS_TOKEN=$(curl -fsS -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')
+          INSTANCE_ID=$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+          AZ=$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+          curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          /tmp/aws/install
+
+          curl -sfL https://get.k3s.io | \
+            INSTALL_K3S_VERSION='v1.32.1+k3s1' \
+            K3S_TOKEN='${K3sToken}' \
+            sh -s - server \
+              --write-kubeconfig-mode=600 \
+              --disable=servicelb \
+              --node-label=workload=infra \
+              --kubelet-arg=provider-id=aws:///$AZ/$INSTANCE_ID
+
+          until SERVER_NODE=$(/usr/local/bin/k3s kubectl get nodes -l node-role.kubernetes.io/control-plane -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) && [ -n "$SERVER_NODE" ]; do sleep 5; done
+          /usr/local/bin/k3s kubectl annotate node "$SERVER_NODE" cluster-autoscaler.kubernetes.io/scale-down-disabled=true --overwrite
+
+  WorkerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${AWS::StackName}-worker
+      LaunchTemplateData:
+        ImageId: !Ref UbuntuAmi
+        InstanceType: !Ref WorkerInstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt WorkerInstanceProfile.Arn
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 2
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            Groups:
+              - !Ref WorkerSecurityGroup
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              DeleteOnTermination: true
+              Encrypted: true
+              VolumeSize: 12
+              VolumeType: gp3
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub ${AWS::StackName}-worker
+              - Key: Project
+                Value: chatroom-autoscaling-lab
+          - ResourceType: volume
+            Tags:
+              - Key: Project
+                Value: chatroom-autoscaling-lab
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euo pipefail
+            exec > >(tee /var/log/chatroom-k3s-bootstrap.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+            IMDS_TOKEN=$(curl -fsS -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')
+            INSTANCE_ID=$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+            AZ=$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+            until curl -ksSf https://${ServerInstance.PrivateIp}:6443/ping >/dev/null; do sleep 10; done
+            curl -sfL https://get.k3s.io | \
+              INSTALL_K3S_VERSION='v1.32.1+k3s1' \
+              K3S_URL='https://${ServerInstance.PrivateIp}:6443' \
+              K3S_TOKEN='${K3sToken}' \
+              sh -s - agent \
+                --node-label=workload=apps \
+                --kubelet-arg=provider-id=aws:///$AZ/$INSTANCE_ID
+
+  WorkerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - ServerInstance
+      - ServerIngressFromWorkers
+      - WorkerIngressFromServer
+      - WorkerIngressFromWorkers
+    Properties:
+      AutoScalingGroupName: !Sub ${AWS::StackName}-workers
+      MinSize: "1"
+      DesiredCapacity: "1"
+      MaxSize: "2"
+      DefaultInstanceWarmup: 120
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 180
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetId
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WorkerLaunchTemplate
+        Version: !GetAtt WorkerLaunchTemplate.LatestVersionNumber
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-worker
+          PropagateAtLaunch: true
+        - Key: Project
+          Value: chatroom-autoscaling-lab
+          PropagateAtLaunch: true
+        - Key: k8s.io/cluster-autoscaler/enabled
+          Value: "true"
+          PropagateAtLaunch: false
+        - Key: k8s.io/cluster-autoscaler/chatroom-autoscaling-lab
+          Value: owned
+          PropagateAtLaunch: false
+        - Key: k8s.io/cluster-autoscaler/node-template/label/workload
+          Value: apps
+          PropagateAtLaunch: true
+
+Outputs:
+  ServerInstanceId:
+    Value: !Ref ServerInstance
+  ServerPublicIp:
+    Value: !GetAtt ServerInstance.PublicIp
+  ServerPrivateIp:
+    Value: !GetAtt ServerInstance.PrivateIp
+  WorkerAutoScalingGroupName:
+    Value: !Ref WorkerAutoScalingGroup

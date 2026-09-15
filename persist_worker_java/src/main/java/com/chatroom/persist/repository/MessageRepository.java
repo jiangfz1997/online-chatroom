@@ -8,17 +8,19 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 
-import java.util.HashMap;
 import java.util.Map;
 
 /**
  * Writes chat messages to the DynamoDB "Messages" table.
- * Schema: PK=room_id (S), SK=timestamp (S), sender (S), text (S).
+ * Schema: PK=room_id (S), SK=seq (N), sender (S), text (S), timestamp (S).
  *
- * SK is stored as "{timestamp}#{id}" rather than a bare timestamp: two distinct messages
- * can legitimately share the same millisecond, and a bare-timestamp SK would silently
- * overwrite the earlier one on PutItem. The id suffix guarantees SK uniqueness while the
- * timestamp prefix keeps range queries (getMessagesBefore) ordered exactly as before.
+ * SK is the per-room seq assigned by the Redis Lua script at consume time (see
+ * RedisMessageService), not the client-received timestamp. seq is centrally assigned in
+ * Kafka-consumption order, so it stays correctly ordered even when a room's members are
+ * spread across ws-server instances; timestamp is stamped per-instance before the message
+ * even reaches Kafka, so two instances' clocks (or just submission jitter) can disagree
+ * with the true arrival order. timestamp is kept as a plain attribute for display, not as
+ * part of the key.
  */
 @Slf4j
 @Repository
@@ -35,18 +37,13 @@ public class MessageRepository {
     }
 
     public void save(RawMessage msg) {
-        String sortKey = msg.getTimestamp() + "#" + msg.getId();
-        Map<String, AttributeValue> item = new HashMap<>(Map.of(
+        Map<String, AttributeValue> item = Map.of(
                 "room_id",   AttributeValue.fromS(msg.getRoomId()),
-                "timestamp", AttributeValue.fromS(sortKey),
+                "seq",       AttributeValue.fromN(String.valueOf(msg.getSeq())),
                 "sender",    AttributeValue.fromS(msg.getSender()),
-                "text",      AttributeValue.fromS(msg.getText())
-        ));
-        // Not indexed/queried — carried through only so the persisted row records what seq
-        // it had at write time (see RawMessage.seq); absent for pre-P3 messages.
-        if (msg.getSeq() != null) {
-            item.put("seq", AttributeValue.fromN(String.valueOf(msg.getSeq())));
-        }
+                "text",      AttributeValue.fromS(msg.getText()),
+                "timestamp", AttributeValue.fromS(msg.getTimestamp())
+        );
         PutItemRequest request = PutItemRequest.builder()
                 .tableName(TABLE)
                 .item(item)

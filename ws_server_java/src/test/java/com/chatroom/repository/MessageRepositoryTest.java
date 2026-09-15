@@ -3,6 +3,7 @@ package com.chatroom.repository;
 import com.chatroom.model.HistoryMessage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -15,12 +16,13 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Verifies fromMap() correctly strips the "#{id}" suffix that persist-worker's
- * MessageRepository.save() now appends to the DynamoDB sort key, and passes
- * legacy bare-timestamp rows through unchanged.
+ * Verifies getMessagesBefore() queries on seq (the DynamoDB sort key, see MessageRepository's
+ * class javadoc for why — seq reflects true Kafka-consumption order, a client-received
+ * timestamp doesn't) and that fromMap() reads seq back correctly.
  */
 @ExtendWith(MockitoExtension.class)
 class MessageRepositoryTest {
@@ -28,39 +30,59 @@ class MessageRepositoryTest {
     @Mock DynamoDbClient dynamo;
 
     @Test
-    void getMessagesBefore_stripsIdSuffixFromCompositeSortKey() {
+    void getMessagesBefore_withCursor_queriesSeqLessThanBefore() {
         MessageRepository repository = new MessageRepository(dynamo);
         when(dynamo.query(any(QueryRequest.class))).thenReturn(
                 QueryResponse.builder()
-                        .items(List.of(itemOf("room-1", "2024-01-01T10:00:00Z#msg-id-1", "alice", "hi")))
+                        .items(List.of(itemOf("room-1", 7L, "alice", "hi", "2024-01-01T10:00:00Z")))
                         .build());
 
-        List<HistoryMessage> result = repository.getMessagesBefore("room-1", "2024-01-01T11:00:00Z", 10);
+        List<HistoryMessage> result = repository.getMessagesBefore("room-1", 10L, 20);
+
+        ArgumentCaptor<QueryRequest> captor = ArgumentCaptor.forClass(QueryRequest.class);
+        verify(dynamo).query(captor.capture());
+        QueryRequest req = captor.getValue();
+        assertThat(req.keyConditionExpression()).isEqualTo("room_id = :rid AND seq < :before");
+        assertThat(req.expressionAttributeValues().get(":before")).isEqualTo(AttributeValue.fromN("10"));
 
         assertThat(result).hasSize(1);
+        assertThat(result.get(0).getSeq()).isEqualTo(7L);
         assertThat(result.get(0).getTimestamp()).isEqualTo("2024-01-01T10:00:00Z");
     }
 
     @Test
-    void getMessagesBefore_legacyBareTimestamp_passesThroughUnchanged() {
+    void getMessagesBefore_nullCursor_omitsUpperBound() {
+        // No cursor yet (first page): start from the newest message, no seq upper bound.
         MessageRepository repository = new MessageRepository(dynamo);
         when(dynamo.query(any(QueryRequest.class))).thenReturn(
-                QueryResponse.builder()
-                        .items(List.of(itemOf("room-1", "2024-01-01T10:00:00Z", "alice", "hi")))
-                        .build());
+                QueryResponse.builder().items(List.of()).build());
 
-        List<HistoryMessage> result = repository.getMessagesBefore("room-1", "2024-01-01T11:00:00Z", 10);
+        repository.getMessagesBefore("room-1", null, 20);
 
-        assertThat(result).hasSize(1);
-        assertThat(result.get(0).getTimestamp()).isEqualTo("2024-01-01T10:00:00Z");
+        ArgumentCaptor<QueryRequest> captor = ArgumentCaptor.forClass(QueryRequest.class);
+        verify(dynamo).query(captor.capture());
+        QueryRequest req = captor.getValue();
+        assertThat(req.keyConditionExpression()).isEqualTo("room_id = :rid");
+        assertThat(req.expressionAttributeValues()).doesNotContainKey(":before");
     }
 
-    private Map<String, AttributeValue> itemOf(String roomId, String sortKey, String sender, String text) {
+    @Test
+    void getMessagesBefore_dynamoFailure_returnsEmptyList() {
+        MessageRepository repository = new MessageRepository(dynamo);
+        when(dynamo.query(any(QueryRequest.class))).thenThrow(new RuntimeException("DynamoDB unavailable"));
+
+        List<HistoryMessage> result = repository.getMessagesBefore("room-1", 10L, 20);
+
+        assertThat(result).isEmpty();
+    }
+
+    private Map<String, AttributeValue> itemOf(String roomId, long seq, String sender, String text, String timestamp) {
         return Map.of(
                 "room_id",   AttributeValue.fromS(roomId),
-                "timestamp", AttributeValue.fromS(sortKey),
+                "seq",       AttributeValue.fromN(String.valueOf(seq)),
                 "sender",    AttributeValue.fromS(sender),
-                "text",      AttributeValue.fromS(text)
+                "text",      AttributeValue.fromS(text),
+                "timestamp", AttributeValue.fromS(timestamp)
         );
     }
 }

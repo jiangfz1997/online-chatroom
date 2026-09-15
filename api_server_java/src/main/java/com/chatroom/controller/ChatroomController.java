@@ -7,7 +7,6 @@ import com.chatroom.dto.JoinChatroomRequest;
 import com.chatroom.model.Chatroom;
 import com.chatroom.model.Message;
 import com.chatroom.model.User;
-import com.chatroom.repository.MessageRepository;
 import com.chatroom.service.ChatroomService;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
@@ -16,7 +15,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -27,14 +25,11 @@ import java.util.stream.Collectors;
 public class ChatroomController {
 
     private final ChatroomService chatroomService;
-    private final MessageRepository messageRepository;
     private final String wsHost;
 
     public ChatroomController(ChatroomService chatroomService,
-                              MessageRepository messageRepository,
                               @Value("${ws.host}") String wsHost) {
         this.chatroomService = chatroomService;
-        this.messageRepository = messageRepository;
         this.wsHost = wsHost;
     }
 
@@ -120,21 +115,21 @@ public class ChatroomController {
         );
     }
 
-    // GET /api/chatrooms/{roomId}/messages?before=<timestamp>&limit=<n>
+    // GET /api/chatrooms/{roomId}/messages?before=<seq>&limit=<n>
+    // before is a seq cursor (see MessageRepository), not a timestamp: omitted means "start
+    // from the newest message".
     @GetMapping("/{roomId}/messages")
     public ResponseEntity<?> getChatroomMessages(
+            Authentication auth,
             @PathVariable String roomId,
-            @RequestParam(required = false) String before,
+            @RequestParam(required = false) Long before,
             @RequestParam(defaultValue = "20") int limit) {
 
-        if (before == null || before.isBlank()) {
-            before = Instant.now().toString();
-        }
         if (limit <= 0) {
             limit = 20;
         }
 
-        List<Message> messages = messageRepository.getMessagesBefore(roomId, before, limit);
+        List<Message> messages = chatroomService.getMessages(roomId, auth.getName(), before, limit);
         return ResponseEntity.ok(Map.of("messages", messages));
     }
 

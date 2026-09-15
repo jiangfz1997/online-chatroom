@@ -39,7 +39,7 @@ class PersistServiceTest {
     private static final String SOURCE_KEY = "room:" + ROOM + ":to_persist";
     private static final String PROCESSING_KEY = "room:" + ROOM + ":persist_processing";
     private static final String MSG_JSON =
-            "{\"type\":\"message\",\"id\":\"msg-1\",\"sender\":\"alice\",\"text\":\"hello\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\"}";
+            "{\"type\":\"message\",\"id\":\"msg-1\",\"sender\":\"alice\",\"text\":\"hello\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\",\"seq\":1}";
 
     @BeforeEach
     void setup() {
@@ -114,11 +114,12 @@ class PersistServiceTest {
         assertThat(saved.getText()).isEqualTo("hello");
         assertThat(saved.getTimestamp()).isEqualTo("2024-01-01T10:00:00Z");
         assertThat(saved.getId()).isEqualTo("msg-1");
+        assertThat(saved.getSeq()).isEqualTo(1L);
     }
 
     @Test
     void syncRoom_missingId_skipsMessage() {
-        String noId = "{\"type\":\"message\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\"}";
+        String noId = "{\"type\":\"message\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\",\"seq\":1}";
         stubClaims(noId);
 
         service.syncRoom(ROOM);
@@ -126,6 +127,20 @@ class PersistServiceTest {
         verify(messageRepository, never()).save(any());
         // Malformed messages are removed from processing too — retrying won't fix bad JSON shape.
         verify(listOps).remove(PROCESSING_KEY, 1, noId);
+    }
+
+    @Test
+    void syncRoom_missingSeq_skipsMessage() {
+        // seq is the DynamoDB sort key now (MessageRepository) — a message without one can't
+        // be written. Every real message has one (the atomic Redis script always assigns it
+        // before RPUSH), so this only guards against a malformed/legacy queue entry.
+        String noSeq = "{\"type\":\"message\",\"id\":\"msg-1\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"room-1\",\"sentAt\":\"2024-01-01T10:00:00Z\"}";
+        stubClaims(noSeq);
+
+        service.syncRoom(ROOM);
+
+        verify(messageRepository, never()).save(any());
+        verify(listOps).remove(PROCESSING_KEY, 1, noSeq);
     }
 
     @Test
