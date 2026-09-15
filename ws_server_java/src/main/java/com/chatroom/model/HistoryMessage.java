@@ -16,4 +16,5 @@ public class HistoryMessage {
     private String timestamp;
     private String sender;
     private String text;
+    private Long seq;
 }

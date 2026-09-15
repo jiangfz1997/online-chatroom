@@ -128,11 +128,19 @@ class WsIntegrationTest {
         when(zSetOps.rangeByScore(anyString(), anyDouble(), anyDouble())).thenReturn(Set.of());
         when(zSetOps.rangeWithScores(anyString(), anyLong(), anyLong())).thenReturn(Set.of());
 
-        // Lua HGET-or-INCR seq assignment: every message id gets a fresh, incrementing seq —
-        // good enough for these tests, none of which exercise the resend/dedup path.
+        // Assign-seq-and-queue script: every message id gets a fresh, incrementing seq and the
+        // mock echoes back the seq-embedded json exactly as the real Lua script would (splice
+        // "seq":N in after the leading '{') — good enough for these tests, none of which
+        // exercise the resend/dedup path. Args are (messageId, json, roomId, recentCount,
+        // ttlSeconds); getArgument index 3 is json (0=script, 1=keys, 2=messageId, 3=json).
         java.util.concurrent.atomic.AtomicLong seqCounter = new java.util.concurrent.atomic.AtomicLong(0);
-        when(redisTemplate.<String>execute(any(RedisScript.class), anyList(), any()))
-                .thenAnswer(inv -> seqCounter.incrementAndGet() + ":1");
+        when(redisTemplate.<String>execute(any(RedisScript.class), anyList(), any(), any(), any(), any(), any()))
+                .thenAnswer(inv -> {
+                    long seq = seqCounter.incrementAndGet();
+                    String json = inv.getArgument(3);
+                    String jsonWithSeq = "{\"seq\":" + seq + "," + json.substring(1);
+                    return seq + ":1:" + jsonWithSeq;
+                });
 
         // expire: always succeed
         when(redisTemplate.expire(anyString(), any())).thenReturn(true);

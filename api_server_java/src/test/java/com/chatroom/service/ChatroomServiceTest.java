@@ -4,7 +4,9 @@ import com.chatroom.dto.CreateChatroomRequest;
 import com.chatroom.exception.ForbiddenException;
 import com.chatroom.exception.NotFoundException;
 import com.chatroom.model.Chatroom;
+import com.chatroom.model.Message;
 import com.chatroom.repository.ChatroomRepository;
+import com.chatroom.repository.MessageRepository;
 import com.chatroom.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,6 +30,9 @@ class ChatroomServiceTest {
 
     @Mock
     private UserRepository userRepository;
+
+    @Mock
+    private MessageRepository messageRepository;
 
     @InjectMocks
     private ChatroomService chatroomService;
@@ -194,6 +199,56 @@ class ChatroomServiceTest {
         assertThatThrownBy(() -> chatroomService.getChatroomByRoomId("room-1", "bob"))
                 .isInstanceOf(NotFoundException.class)
                 .hasMessage("Chatroom not found");
+    }
+
+    // ── getMessages (history authorization) ───────────────────────────────────
+
+    @Test
+    void getMessages_member_returnsHistory() {
+        Chatroom existing = chatroom("room-1", false, List.of("alice", "bob"));
+        when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
+        List<Message> history = List.of(new Message("room-1", "2024-01-01T00:00:00Z", "alice", "hi", 10L));
+        when(messageRepository.getMessagesBefore("room-1", 50L, 20)).thenReturn(history);
+
+        List<Message> result = chatroomService.getMessages("room-1", "bob", 50L, 20);
+
+        assertThat(result).hasSize(1);
+    }
+
+    @Test
+    void getMessages_publicRoomNonMember_throwsForbidden() {
+        Chatroom existing = chatroom("room-1", false, List.of("alice"));
+        when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> chatroomService.getMessages("room-1", "bob", 50L, 20))
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessage("You are not a member of this chatroom");
+
+        verify(messageRepository, never()).getMessagesBefore(any(), any(), anyInt());
+    }
+
+    @Test
+    void getMessages_privateRoomNonMember_throwsNotFound() {
+        Chatroom existing = chatroom("room-1", true, List.of("alice"));
+        when(chatroomRepository.findByRoomId("room-1")).thenReturn(Optional.of(existing));
+
+        // a private room must not even confirm its own existence to a non-member
+        assertThatThrownBy(() -> chatroomService.getMessages("room-1", "bob", 50L, 20))
+                .isInstanceOf(NotFoundException.class)
+                .hasMessage("Chatroom not found");
+
+        verify(messageRepository, never()).getMessagesBefore(any(), any(), anyInt());
+    }
+
+    @Test
+    void getMessages_roomNotFound_throwsNotFound() {
+        when(chatroomRepository.findByRoomId("no-such-room")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatroomService.getMessages("no-such-room", "bob", 50L, 20))
+                .isInstanceOf(NotFoundException.class)
+                .hasMessage("Chatroom not found");
+
+        verify(messageRepository, never()).getMessagesBefore(any(), any(), anyInt());
     }
 
     // ── test helper ───────────────────────────────────────────────────────────

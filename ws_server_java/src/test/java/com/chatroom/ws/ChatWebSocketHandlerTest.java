@@ -144,21 +144,34 @@ class ChatWebSocketHandlerTest {
     @Test
     void handleTextMessage_fetchHistory_queriesDynamoAndSendsToClient() throws Exception {
         List<HistoryMessage> messages = List.of(
-                new HistoryMessage("room-1", "2024-01-01T10:00:00Z", "alice", "hi"),
-                new HistoryMessage("room-1", "2024-01-01T09:00:00Z", "bob",   "hey")
+                new HistoryMessage("room-1", "2024-01-01T10:00:00Z", "alice", "hi",  9L),
+                new HistoryMessage("room-1", "2024-01-01T09:00:00Z", "bob",   "hey", 8L)
         );
-        when(messageRepository.getMessagesBefore(eq("room-1"), anyString(), eq(10)))
+        when(messageRepository.getMessagesBefore(eq("room-1"), eq(10L), eq(10)))
                 .thenReturn(messages);
 
         handler.afterConnectionEstablished(session);
 
         TextMessage req = new TextMessage(
-                "{\"type\":\"fetch_history\",\"roomID\":\"room-1\",\"before\":\"2024-01-01T11:00:00Z\",\"limit\":10}");
+                "{\"type\":\"fetch_history\",\"roomID\":\"room-1\",\"before\":10,\"limit\":10}");
         handler.handleTextMessage(session, req);
 
-        verify(messageRepository).getMessagesBefore("room-1", "2024-01-01T11:00:00Z", 10);
+        verify(messageRepository).getMessagesBefore("room-1", 10L, 10);
         // Should NOT broadcast history to room — only send back to requester
         verify(hub, never()).broadcast(anyString(), contains("history_result"));
+    }
+
+    @Test
+    void handleTextMessage_fetchHistory_noBefore_queriesWithNullCursor() throws Exception {
+        when(messageRepository.getMessagesBefore(eq("room-1"), isNull(), eq(20)))
+                .thenReturn(List.of());
+
+        handler.afterConnectionEstablished(session);
+
+        TextMessage req = new TextMessage("{\"type\":\"fetch_history\",\"roomID\":\"room-1\"}");
+        handler.handleTextMessage(session, req);
+
+        verify(messageRepository).getMessagesBefore("room-1", null, 20);
     }
 
     @Test
@@ -203,7 +216,7 @@ class ChatWebSocketHandlerTest {
         // No hub broadcast, no Kafka, no DynamoDB — silently ignored
         verify(hub, never()).broadcast(anyString(), anyString());
         verify(producer, never()).send(anyString(), anyString());
-        verify(messageRepository, never()).getMessagesBefore(anyString(), anyString(), anyInt());
+        verify(messageRepository, never()).getMessagesBefore(anyString(), any(), anyInt());
     }
 
     @Test

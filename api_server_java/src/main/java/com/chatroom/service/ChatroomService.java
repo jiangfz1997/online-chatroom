@@ -4,8 +4,10 @@ import com.chatroom.dto.CreateChatroomRequest;
 import com.chatroom.exception.ForbiddenException;
 import com.chatroom.exception.NotFoundException;
 import com.chatroom.model.Chatroom;
+import com.chatroom.model.Message;
 import com.chatroom.model.User;
 import com.chatroom.repository.ChatroomRepository;
+import com.chatroom.repository.MessageRepository;
 import com.chatroom.repository.UserRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -21,10 +23,14 @@ public class ChatroomService {
 
     private final ChatroomRepository chatroomRepository;
     private final UserRepository userRepository;
+    private final MessageRepository messageRepository;
 
-    public ChatroomService(ChatroomRepository chatroomRepository, UserRepository userRepository) {
+    public ChatroomService(ChatroomRepository chatroomRepository,
+                           UserRepository userRepository,
+                           MessageRepository messageRepository) {
         this.chatroomRepository = chatroomRepository;
         this.userRepository = userRepository;
+        this.messageRepository = messageRepository;
     }
 
     /**
@@ -128,5 +134,21 @@ public class ChatroomService {
     public List<User> getMembers(String roomId, String requester) {
         Chatroom chatroom = getChatroomByRoomId(roomId, requester);
         return userRepository.findProfiles(chatroom.getMembers());
+    }
+
+    /**
+     * Returns a page of room history, oldest cursor first, for a requester who must
+     * be a member — the same rule the WebSocket handshake enforces.
+     * A private room stays invisible to non-members (404 via getChatroomByRoomId);
+     * a public room the requester has not joined returns 403, since a public room's
+     * existence is not a secret.
+     */
+    public List<Message> getMessages(String roomId, String requester, Long before, int limit) {
+        Chatroom chatroom = getChatroomByRoomId(roomId, requester);
+
+        if (!chatroom.getMembers().contains(requester)) {
+            throw new ForbiddenException("You are not a member of this chatroom");
+        }
+        return messageRepository.getMessagesBefore(roomId, before, limit);
     }
 }

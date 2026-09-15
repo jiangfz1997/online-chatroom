@@ -1,11 +1,11 @@
 package com.chatroom.service;
 
 import com.chatroom.metrics.WsMetrics;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -27,10 +27,15 @@ import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for RedisMessageService's P3 seq-assignment/dedup and recent-cache logic
- * (tmp_doc/05 Track 1). StringRedisTemplate is mocked — no running Redis required. The Lua
- * HGET-or-INCR script's atomicity is a property of it being a single script (asserted for
- * real by the reliability.js load-test, not something a mock can meaningfully re-verify);
- * these tests instead pin down how RedisMessageService uses whatever the script returns.
+ * (tmp_doc/05 Track 1). StringRedisTemplate is mocked — no running Redis required. Dedup+seq
+ * assignment, the recent-cache write, and the persist-queue write all happen inside one Lua
+ * script now (ASSIGN_SEQ_AND_QUEUE_SCRIPT); the script's atomicity is a property of it being a
+ * single script (asserted for real by the reliability.js load-test, not something a mock can
+ * meaningfully re-verify). These tests instead pin down that saveMessage makes exactly one
+ * atomic Redis call with the right keys/args and correctly parses whatever the script returns —
+ * in particular that zSetOps/listOps/setOps are never touched directly from Java, which is the
+ * whole point: there is no window between "seq assigned" and "cached/queued" for a crash to
+ * land in.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -42,41 +47,47 @@ class RedisMessageServiceTest {
     @Mock SetOperations<String, String> setOps;
 
     RedisMessageService service;
-    ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void setup() {
         lenient().when(redis.opsForZSet()).thenReturn(zSetOps);
-        lenient().when(redis.opsForList()).thenReturn(listOps);
-        lenient().when(redis.opsForSet()).thenReturn(setOps);
-        service = new RedisMessageService(redis, objectMapper, new WsMetrics(new SimpleMeterRegistry()));
+        service = new RedisMessageService(redis, new WsMetrics(new SimpleMeterRegistry()));
     }
 
-    private void stubAssignSeq(String messageId, long seq, boolean isNew) {
-        when(redis.<String>execute(any(RedisScript.class), anyList(), eq(messageId)))
-                .thenReturn(seq + ":" + (isNew ? "1" : "0"));
+    /** Matches the script's 5-key, 5-arg call shape regardless of the actual values. */
+    private void stubAssignAndQueue(String scriptResult) {
+        when(redis.<String>execute(any(RedisScript.class), anyList(), any(), any(), any(), any(), any()))
+                .thenReturn(scriptResult);
     }
 
     @Test
-    void saveMessage_freshId_assignsSeqEmbedsItAndCaches() {
-        stubAssignSeq("msg-1", 7L, true);
+    void saveMessage_freshId_assignsSeqEmbedsItAndCachesAtomically() {
+        stubAssignAndQueue("7:1:{\"seq\":7,\"text\":\"hi\"}");
 
         RedisMessageService.SaveResult result = service.saveMessage("room-1", "msg-1", "{\"text\":\"hi\"}");
 
         assertThat(result.isNew()).isTrue();
         assertThat(result.seq()).isEqualTo(7L);
-        assertThat(result.json()).contains("\"seq\":7").contains("\"text\":\"hi\"");
+        assertThat(result.json()).isEqualTo("{\"seq\":7,\"text\":\"hi\"}");
 
-        verify(zSetOps).add(eq("room:room-1:recent"), eq(result.json()), eq(7.0));
-        verify(listOps).rightPush(eq("room:room-1:to_persist"), eq(result.json()));
-        verify(setOps).add("rooms:active", "room-1");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
+        verify(redis).execute(any(RedisScript.class), keysCaptor.capture(),
+                eq("msg-1"), eq("{\"text\":\"hi\"}"), eq("room-1"), any(), any());
+        assertThat(keysCaptor.getValue()).containsExactly(
+                "room:room-1:msgseq", "room:room-1:seqcounter",
+                "room:room-1:recent", "room:room-1:to_persist", "rooms:active");
+
+        // Dedup, seq assignment, recent-cache write and persist-queue write are all inside the
+        // script above — Java must never touch these ops directly, or the atomicity is fake.
+        verifyNoInteractions(zSetOps, listOps, setOps);
     }
 
     @Test
     void saveMessage_duplicateId_skipsCacheWriteAndReturnsExistingSeqWithNoJson() {
         // A resent/redelivered id must not re-cache or re-queue for persistence — the
         // caller (ChatMessageConsumer) uses isNew=false as the signal to skip broadcast too.
-        stubAssignSeq("msg-1", 7L, false);
+        stubAssignAndQueue("7:0:");
 
         RedisMessageService.SaveResult result = service.saveMessage("room-1", "msg-1", "{\"text\":\"hi\"}");
 
@@ -85,6 +96,21 @@ class RedisMessageServiceTest {
         assertThat(result.json()).isNull();
 
         verifyNoInteractions(zSetOps, listOps, setOps);
+    }
+
+    @Test
+    void saveMessage_freshId_jsonContainingColons_parsedCorrectly() {
+        // The old parser used lastIndexOf(':'), which broke once the trailing json payload was
+        // folded into the same return string (colons inside message text, or JSON's own
+        // "field":value colons, would shift where the split lands). The new parser only looks
+        // at the first two colons, which are structural (numeric seq, single-char flag).
+        stubAssignAndQueue("9:1:{\"seq\":9,\"text\":\"time: 10:30, see you\"}");
+
+        RedisMessageService.SaveResult result = service.saveMessage("room-1", "msg-2", "{\"text\":\"time: 10:30, see you\"}");
+
+        assertThat(result.isNew()).isTrue();
+        assertThat(result.seq()).isEqualTo(9L);
+        assertThat(result.json()).isEqualTo("{\"seq\":9,\"text\":\"time: 10:30, see you\"}");
     }
 
     @Test

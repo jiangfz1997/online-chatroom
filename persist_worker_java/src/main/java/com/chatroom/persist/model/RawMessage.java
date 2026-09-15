@@ -20,8 +20,10 @@ public class RawMessage {
     @JsonProperty("sentAt")
     private String timestamp;
 
-    // Per-room sequence number (P3 — tmp_doc/05 Track 1). Absent for messages produced by
-    // a pre-P3 client/ws-server during a rolling deploy; not indexed in DynamoDB (SK stays
-    // {timestamp}#{id}), just carried through for debugging/future backfill.
+    // Per-room sequence number, assigned atomically by the Redis Lua script at consume time
+    // (RedisMessageService) — every message reaching this queue has one. This is now the
+    // DynamoDB sort key (see MessageRepository): it reflects true Kafka-consumption order,
+    // unlike the client-received timestamp, which is stamped per-ws-server-instance before
+    // the message even reaches Kafka and can disagree with arrival order across instances.
     private Long seq;
 }

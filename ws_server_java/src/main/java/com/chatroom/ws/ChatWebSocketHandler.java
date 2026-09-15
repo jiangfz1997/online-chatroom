@@ -214,29 +214,30 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     /**
-     * Fetches historical messages from DynamoDB and sends them back to the requesting client only.
-     * Mirrors Go handleFetchHistory.
+     * Fetches historical messages from DynamoDB and sends them back to the requesting client
+     * only. The pagination cursor is the seq of the oldest message the client already has —
+     * absent (or non-numeric) means "start from the newest message". seq, not a timestamp, is
+     * what keeps this consistent with the live/recent-cache ordering across ws-server
+     * instances (see MessageRepository).
      */
     private void handleFetchHistory(ClientSession client, JsonNode req) {
         String roomId = req.path("roomID").asText(client.getRoomId());
-        String before = req.path("before").asText("");
-        int    limit  = req.path("limit").asInt(20);
+        JsonNode beforeNode = req.path("before");
+        Long beforeSeq = beforeNode.isNumber() ? beforeNode.asLong() : null;
+        int limit = req.path("limit").asInt(20);
 
-        if (before.isBlank()) {
-            before = Instant.now().toString();
-        }
         if (limit <= 0) limit = 20;
 
-        List<HistoryMessage> messages = messageRepository.getMessagesBefore(roomId, before, limit);
+        List<HistoryMessage> messages = messageRepository.getMessagesBefore(roomId, beforeSeq, limit);
 
-        String lastTime = messages.isEmpty() ? "" : messages.get(messages.size() - 1).getTimestamp();
+        Long lastSeq = messages.isEmpty() ? null : messages.get(messages.size() - 1).getSeq();
 
         Map<String, Object> resp = new HashMap<>();
-        resp.put("type",            "history_result");
-        resp.put("roomID",          roomId);
-        resp.put("messages",        messages);
-        resp.put("hasMore",         messages.size() == limit);
-        resp.put("lastMessageTime", lastTime);
+        resp.put("type",           "history_result");
+        resp.put("roomID",         roomId);
+        resp.put("messages",       messages);
+        resp.put("hasMore",        messages.size() == limit);
+        resp.put("lastMessageSeq", lastSeq);
 
         try {
             client.send(objectMapper.writeValueAsString(resp));

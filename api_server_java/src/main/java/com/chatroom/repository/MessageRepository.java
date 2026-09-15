@@ -22,22 +22,30 @@ public class MessageRepository {
     }
 
     /**
-     * Returns up to {@code limit} messages in a room with timestamp < before,
-     * ordered newest-first (ScanIndexForward=false matches Go version).
+     * Returns up to {@code limit} messages in a room with seq < before, newest-first
+     * (ScanIndexForward=false). seq — not the client-received timestamp — is the sort key:
+     * it's assigned centrally at consume time in true Kafka-consumption order, so it stays
+     * correctly ordered even when a room's members are spread across ws-server instances,
+     * each with its own clock. A null before means "start from the newest message".
      */
-    public List<Message> getMessagesBefore(String roomId, String before, int limit) {
-        QueryResponse response = dynamoDbClient.query(QueryRequest.builder()
+    public List<Message> getMessagesBefore(String roomId, Long before, int limit) {
+        QueryRequest.Builder query = QueryRequest.builder()
                 .tableName(TABLE)
-                // #ts avoids collision with the reserved word "timestamp"
-                .keyConditionExpression("room_id = :rid AND #ts < :before")
-                .expressionAttributeNames(Map.of("#ts", "timestamp"))
-                .expressionAttributeValues(Map.of(
-                        ":rid",    AttributeValue.fromS(roomId),
-                        ":before", AttributeValue.fromS(before)
-                ))
                 .limit(limit)
-                .scanIndexForward(false)
-                .build());
+                .scanIndexForward(false);
+
+        if (before != null) {
+            query.keyConditionExpression("room_id = :rid AND seq < :before")
+                    .expressionAttributeValues(Map.of(
+                            ":rid",    AttributeValue.fromS(roomId),
+                            ":before", AttributeValue.fromN(String.valueOf(before))
+                    ));
+        } else {
+            query.keyConditionExpression("room_id = :rid")
+                    .expressionAttributeValues(Map.of(":rid", AttributeValue.fromS(roomId)));
+        }
+
+        QueryResponse response = dynamoDbClient.query(query.build());
 
         if (response.items().isEmpty()) {
             return Collections.emptyList();
@@ -53,7 +61,8 @@ public class MessageRepository {
                 item.get("room_id").s(),
                 item.get("timestamp").s(),
                 item.get("sender").s(),
-                item.get("text").s()
+                item.get("text").s(),
+                Long.parseLong(item.get("seq").n())
         );
     }
 }
