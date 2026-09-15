@@ -62,45 +62,106 @@ jobs:
     name: Deploy to k3s
     needs: build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
-    - name: Deploy via SSH
-      uses: appleboy/ssh-action@v1
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
       with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ec2-user
-        key: ${{ secrets.EC2_SSH_KEY }}
-        script: |
-          # Install/refresh the ECR pull-secret refresher on the host (idempotent).
-          # ECR login tokens expire after 12h; this keeps the imagePullSecret fresh.
-          # Uses the EC2 instance role (no keys). Reinstalling each deploy self-heals
-          # a rebuilt host; the cron covers the gaps between deploys.
-          sudo tee /usr/local/bin/refresh-ecr-secret.sh >/dev/null <<'SH'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-          REGION=us-east-1
-          REGISTRY=492832370104.dkr.ecr.us-east-1.amazonaws.com
-          TOKEN=$(aws ecr get-login-password --region "$REGION")
-          kubectl delete secret ecr-secret --ignore-not-found
-          kubectl create secret docker-registry ecr-secret \
-            --docker-server="$REGISTRY" --docker-username=AWS --docker-password="$TOKEN"
-          SH
-          sudo chmod +x /usr/local/bin/refresh-ecr-secret.sh
-          echo '0 */8 * * * root /usr/local/bin/refresh-ecr-secret.sh >>/var/log/ecr-refresh.log 2>&1' | sudo tee /etc/cron.d/ecr-refresh >/dev/null
+        role-to-assume: arn:aws:iam::492832370104:role/github-actions-chatroom
+        aws-region: us-east-1
 
-          # Refresh now so the rollout below pulls with a valid token.
-          sudo /usr/local/bin/refresh-ecr-secret.sh
+    - name: Deploy using EC2 Instance Connect
+      shell: bash
+      run: |
+        set -euo pipefail
 
-          sudo kubectl rollout restart deployment/api-server
-          sudo kubectl rollout restart deployment/ws-server
-          sudo kubectl rollout restart deployment/persist-worker
-          sudo kubectl rollout status deployment/api-server --timeout=180s
-          sudo kubectl rollout status deployment/ws-server --timeout=180s
-          sudo kubectl rollout status deployment/persist-worker --timeout=180s
-          echo "Deploy complete"
-          sudo kubectl get pods
+        KEY_PATH="$RUNNER_TEMP/chatroom-eic"
+        KNOWN_HOSTS="$RUNNER_TEMP/known_hosts"
 
+        ssh-keygen -q -t ed25519 -N "" -f "$KEY_PATH"
+        chmod 600 "$KEY_PATH"
+        trap 'rm -f "$KEY_PATH" "${KEY_PATH}.pub"' EXIT
+
+        INSTANCE_ID="$(
+          aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names chatroom-k3s-asg \
+            --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService` && HealthStatus==`Healthy`].InstanceId | [0]' \
+            --output text
+        )"
+
+        if [[ -z "$INSTANCE_ID" || "$INSTANCE_ID" == "None" ]]; then
+          echo "No healthy InService instance found"
+          exit 1
+        fi
+
+        read -r AZ HOST < <(
+          aws ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].[Placement.AvailabilityZone,PublicIpAddress]' \
+            --output text
+        )
+
+        if [[ -z "$HOST" || "$HOST" == "None" ]]; then
+          echo "Instance has no public IP"
+          exit 1
+        fi
+
+        push_key() {
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user ec2-user \
+            --ssh-public-key "file://${KEY_PATH}.pub"
+        }
+
+        SSH_OPTIONS=(
+          -i "$KEY_PATH"
+          -o IdentitiesOnly=yes
+          -o StrictHostKeyChecking=accept-new
+          -o UserKnownHostsFile="$KNOWN_HOSTS"
+        )
+
+        # 第一次连接：复制部署清单
+        push_key
+        scp "${SSH_OPTIONS[@]}" -r \
+          k3s-cloud \
+          "ec2-user@${HOST}:/tmp/"
+
+        # 公钥只有 60 秒有效，SSH 前重新注入一次
+        push_key
+        ssh "${SSH_OPTIONS[@]}" "ec2-user@${HOST}" 'bash -se' <<'REMOTE'
+        export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+        sudo /usr/local/bin/refresh-ecr-secret.sh
+        sudo kubectl apply -f /tmp/k3s-cloud
+
+        if ! sudo kubectl wait \
+          --for=condition=Ready pod/kafka-0 \
+          --timeout=60s; then
+          sudo kubectl delete pod kafka-0 \
+            --ignore-not-found \
+            --wait=false
+        fi
+
+        sudo kubectl rollout status statefulset/kafka --timeout=300s
+        sudo kubectl rollout status deployment/redis --timeout=180s
+
+        sudo kubectl rollout restart deployment/api-server
+        sudo kubectl rollout restart deployment/ws-server
+        sudo kubectl rollout restart deployment/persist-worker
+
+        sudo kubectl rollout status deployment/api-server --timeout=240s
+        sudo kubectl rollout status deployment/ws-server --timeout=240s
+        sudo kubectl rollout status deployment/persist-worker --timeout=240s
+
+        sudo kubectl get pods
+        REMOTE
   deploy-frontend:
     name: Build & Deploy Frontend to S3
     needs: build-and-push
