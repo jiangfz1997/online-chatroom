@@ -12,8 +12,6 @@ spec:
       labels:
         app: persist-worker
     spec:
-      nodeSelector:
-        workload: apps
       imagePullSecrets:
       - name: ecr-secret
       containers:
@@ -30,8 +28,8 @@ spec:
           value: "-Xms64m -Xmx128m -XX:+UseContainerSupport"
         resources:
           requests:
-            memory: "100Mi"
+            memory: "160Mi"
             cpu: "50m"
           limits:
-            memory: "160Mi"
+            memory: "256Mi"
             cpu: "200m"

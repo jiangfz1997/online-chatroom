@@ -13,8 +13,6 @@ spec:
         app: ws-server
     spec:
       terminationGracePeriodSeconds: 30
-      nodeSelector:
-        workload: apps
       imagePullSecrets:
       - name: ecr-secret
       containers:
