@@ -3,6 +3,7 @@ package com.chatroom.persist.service;
 import com.chatroom.persist.metrics.PersistMetrics;
 import com.chatroom.persist.model.RawMessage;
 import com.chatroom.persist.repository.MessageRepository;
+import com.chatroom.persist.repository.SeqConflictException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -98,6 +99,20 @@ class PersistServiceTest {
         verify(messageRepository, times(2)).save(any(RawMessage.class));
         // Each successfully-saved message is removed from processing once confirmed.
         verify(listOps, times(2)).remove(PROCESSING_KEY, 1, MSG_JSON);
+    }
+
+    @Test
+    void syncRoom_seqConflict_parksMessageAndDoesNotRetry() {
+        // Another message already owns this seq in DynamoDB — retrying can never succeed, so
+        // the message is parked in persist_conflicts and removed from processing (not left
+        // there for recoverOrphans to loop on every tick).
+        stubClaims(MSG_JSON);
+        doThrow(new SeqConflictException(ROOM, 1L, "msg-1")).when(messageRepository).save(any());
+
+        service.syncRoom(ROOM);
+
+        verify(listOps).rightPush("room:" + ROOM + ":persist_conflicts", MSG_JSON);
+        verify(listOps).remove(PROCESSING_KEY, 1, MSG_JSON);
     }
 
     @Test

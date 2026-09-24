@@ -68,6 +68,23 @@ public class MessageRepository {
         }
     }
 
+    /**
+     * Highest seq persisted for the room, or 0 if the room has no history. Unlike
+     * getMessagesBefore, failures propagate: callers use this to reseed the seq counter, and
+     * mistaking "DynamoDB unreachable" for "empty room" would restart seq at 1.
+     */
+    public long getMaxSeq(String roomId) {
+        QueryResponse response = dynamo.query(QueryRequest.builder()
+                .tableName(TABLE)
+                .keyConditionExpression("room_id = :rid")
+                .expressionAttributeValues(Map.of(":rid", AttributeValue.fromS(roomId)))
+                .projectionExpression("seq")
+                .scanIndexForward(false)
+                .limit(1)
+                .build());
+        return response.items().isEmpty() ? 0L : Long.parseLong(response.items().get(0).get("seq").n());
+    }
+
     private HistoryMessage fromMap(Map<String, AttributeValue> item) {
         return new HistoryMessage(
                 item.get("room_id").s(),

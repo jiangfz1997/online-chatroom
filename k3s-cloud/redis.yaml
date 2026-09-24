@@ -4,6 +4,10 @@ metadata:
   name: redis
 spec:
   replicas: 1
+  # Recreate, not RollingUpdate: two Redis processes must never share the same hostPath AOF
+  # directory, even briefly during a rollout.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: redis
@@ -12,19 +16,33 @@ spec:
       labels:
         app: redis
     spec:
+      nodeSelector:
+        workload: infra
       containers:
       - name: redis
         image: redis:7-alpine
-        command: ["redis-server", "--maxmemory", "100mb", "--maxmemory-policy", "noeviction"]
+        # AOF (fsync once per second) so a Redis restart no longer wipes the per-room seq
+        # counters, the recent cache, or the not-yet-persisted to_persist queue.
+        command: ["redis-server", "--maxmemory", "100mb", "--maxmemory-policy", "noeviction",
+                  "--appendonly", "yes", "--appendfsync", "everysec"]
         ports:
         - containerPort: 6379
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
         resources:
           requests:
             memory: "64Mi"
             cpu: "50m"
           limits:
-            memory: "128Mi"
+            # Headroom above maxmemory for the fork during AOF rewrite (copy-on-write).
+            memory: "192Mi"
             cpu: "200m"
+      volumes:
+      - name: redis-data
+        hostPath:
+          path: /data/redis
+          type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

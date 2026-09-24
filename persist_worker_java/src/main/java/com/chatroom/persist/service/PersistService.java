@@ -3,6 +3,7 @@ package com.chatroom.persist.service;
 import com.chatroom.persist.metrics.PersistMetrics;
 import com.chatroom.persist.model.RawMessage;
 import com.chatroom.persist.repository.MessageRepository;
+import com.chatroom.persist.repository.SeqConflictException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -30,6 +31,9 @@ import java.util.UUID;
  *                                      to_persist for a retry. A retry can only ever produce
  *                                      a duplicate DynamoDB row (idempotent SK absorbs it),
  *                                      never data loss.
+ *   room:{roomId}:persist_conflicts — List: messages whose seq is already taken by a different
+ *                                      message in DynamoDB (seq counter reuse). Parked here
+ *                                      for manual inspection; never retried automatically.
  *
  * Mirrors Go persist/persist.go: StartRedisToDBSyncLoop → syncAllRooms → syncRoomMessages.
  */
@@ -108,6 +112,14 @@ public class PersistService {
                 // Parsed and handled (saved or deliberately skipped as malformed) with no
                 // exception — safe to drop from processing either way.
                 redis.opsForList().remove(processingKey, 1, json);
+            } catch (SeqConflictException e) {
+                // Another message already owns this seq in DynamoDB — the seq counter was
+                // reused. Retrying can never succeed, so park it for manual inspection instead
+                // of looping on it every tick, and never overwrite the existing row.
+                log.error("{}; parking in {}", e.getMessage(), conflictKey(roomId));
+                redis.opsForList().rightPush(conflictKey(roomId), json);
+                redis.opsForList().remove(processingKey, 1, json);
+                metrics.seqConflict();
             } catch (Exception e) {
                 // Left in processingKey on purpose: a transient DynamoDB failure (or a crash
                 // right here) must not silently drop the message — recoverOrphans() on the
@@ -137,6 +149,10 @@ public class PersistService {
             String moved = redis.opsForList().move(processingKey, Direction.RIGHT, sourceKey, Direction.LEFT);
             if (moved == null) break;
         }
+    }
+
+    private static String conflictKey(String roomId) {
+        return "room:" + roomId + ":persist_conflicts";
     }
 
     /** Sum of the to_persist queue length across all active rooms — a snapshot taken once per tick. */

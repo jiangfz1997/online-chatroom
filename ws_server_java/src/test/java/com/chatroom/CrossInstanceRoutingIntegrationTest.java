@@ -127,6 +127,10 @@ class CrossInstanceRoutingIntegrationTest {
         Set<String> routedInstances = redis.opsForSet().members("room:" + ROOM_ID + ":instances");
         assertThat(routedInstances).containsExactly("ws-test-with-client");
 
+        // No DynamoDB in this test: pre-create the room's seq counter so the consumer doesn't
+        // need to reseed it from DynamoDB's max seq (see RedisMessageService#seedCounter).
+        redis.opsForValue().set("room:" + ROOM_ID + ":seqcounter", "0");
+
         String json = String.format(
                 "{\"type\":\"message\",\"id\":\"%s\",\"sender\":\"alice\",\"text\":\"hi\",\"roomID\":\"%s\",\"sentAt\":\"%s\"}",
                 java.util.UUID.randomUUID(), ROOM_ID, Instant.now());

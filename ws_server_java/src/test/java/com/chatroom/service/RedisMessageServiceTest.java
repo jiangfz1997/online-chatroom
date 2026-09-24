@@ -1,6 +1,7 @@
 package com.chatroom.service;
 
 import com.chatroom.metrics.WsMetrics;
+import com.chatroom.repository.MessageRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,7 @@ import org.springframework.data.redis.core.DefaultTypedTuple;
 import org.springframework.data.redis.core.ListOperations;
 import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.data.redis.core.script.RedisScript;
 
@@ -45,13 +47,16 @@ class RedisMessageServiceTest {
     @Mock ZSetOperations<String, String> zSetOps;
     @Mock ListOperations<String, String> listOps;
     @Mock SetOperations<String, String> setOps;
+    @Mock ValueOperations<String, String> valueOps;
+    @Mock MessageRepository messageRepository;
 
     RedisMessageService service;
 
     @BeforeEach
     void setup() {
         lenient().when(redis.opsForZSet()).thenReturn(zSetOps);
-        service = new RedisMessageService(redis, new WsMetrics(new SimpleMeterRegistry()));
+        lenient().when(redis.opsForValue()).thenReturn(valueOps);
+        service = new RedisMessageService(redis, new WsMetrics(new SimpleMeterRegistry()), messageRepository);
     }
 
     /** Matches the script's 5-key, 5-arg call shape regardless of the actual values. */
@@ -96,6 +101,47 @@ class RedisMessageServiceTest {
         assertThat(result.json()).isNull();
 
         verifyNoInteractions(zSetOps, listOps, setOps);
+    }
+
+    @Test
+    void saveMessage_missingCounter_reseedsPastDynamoMaxSeqThenAssigns() {
+        // Redis lost the counter (restart without persistence): the script refuses to INCR from
+        // nothing, and the counter is reseeded a safe gap past DynamoDB's max seq instead of
+        // restarting at 1 and reusing seqs that history and clients already hold.
+        when(redis.<String>execute(any(RedisScript.class), anyList(), any(), any(), any(), any(), any()))
+                .thenReturn("0:2:", "1501:1:{\"seq\":1501}");
+        when(messageRepository.getMaxSeq("room-1")).thenReturn(500L);
+        when(valueOps.setIfAbsent("room:room-1:seqcounter", "1500")).thenReturn(true);
+
+        RedisMessageService.SaveResult result = service.saveMessage("room-1", "msg-1", "{}");
+
+        verify(valueOps).setIfAbsent("room:room-1:seqcounter", String.valueOf(500 + RedisMessageService.SEED_GAP));
+        assertThat(result.isNew()).isTrue();
+        assertThat(result.seq()).isEqualTo(1501L);
+    }
+
+    @Test
+    void saveMessage_missingCounterForNewRoom_seedsZeroSoFirstSeqIsOne() {
+        when(redis.<String>execute(any(RedisScript.class), anyList(), any(), any(), any(), any(), any()))
+                .thenReturn("0:2:", "1:1:{\"seq\":1}");
+        when(messageRepository.getMaxSeq("room-1")).thenReturn(0L);
+
+        RedisMessageService.SaveResult result = service.saveMessage("room-1", "msg-1", "{}");
+
+        verify(valueOps).setIfAbsent("room:room-1:seqcounter", "0");
+        assertThat(result.seq()).isEqualTo(1L);
+    }
+
+    @Test
+    void saveMessage_missingCounterAndDynamoDown_propagatesWithoutSeeding() {
+        // Treating "DynamoDB unreachable" as "empty room" would restart seq at 1 — the error
+        // must propagate so Kafka's error handler retries the record later.
+        stubAssignAndQueue("0:2:");
+        when(messageRepository.getMaxSeq("room-1")).thenThrow(new RuntimeException("DynamoDB down"));
+
+        org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                () -> service.saveMessage("room-1", "msg-1", "{}"));
+        verifyNoInteractions(valueOps);
     }
 
     @Test

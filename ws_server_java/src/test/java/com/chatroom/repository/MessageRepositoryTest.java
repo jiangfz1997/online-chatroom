@@ -30,6 +30,28 @@ class MessageRepositoryTest {
     @Mock DynamoDbClient dynamo;
 
     @Test
+    void getMaxSeq_queriesNewestSingleItem() {
+        MessageRepository repository = new MessageRepository(dynamo);
+        when(dynamo.query(any(QueryRequest.class))).thenReturn(
+                QueryResponse.builder().items(List.of(Map.of("seq", AttributeValue.fromN("500")))).build());
+
+        assertThat(repository.getMaxSeq("room-1")).isEqualTo(500L);
+
+        ArgumentCaptor<QueryRequest> captor = ArgumentCaptor.forClass(QueryRequest.class);
+        verify(dynamo).query(captor.capture());
+        assertThat(captor.getValue().scanIndexForward()).isFalse();
+        assertThat(captor.getValue().limit()).isEqualTo(1);
+    }
+
+    @Test
+    void getMaxSeq_emptyRoom_returnsZero() {
+        MessageRepository repository = new MessageRepository(dynamo);
+        when(dynamo.query(any(QueryRequest.class))).thenReturn(QueryResponse.builder().items(List.of()).build());
+
+        assertThat(repository.getMaxSeq("room-1")).isZero();
+    }
+
+    @Test
     void getMessagesBefore_withCursor_queriesSeqLessThanBefore() {
         MessageRepository repository = new MessageRepository(dynamo);
         when(dynamo.query(any(QueryRequest.class))).thenReturn(
