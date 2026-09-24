@@ -1,6 +1,7 @@
 package com.chatroom.service;
 
 import com.chatroom.metrics.WsMetrics;
+import com.chatroom.repository.MessageRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -18,7 +19,8 @@ import java.util.Set;
  * Manages per-room seq assignment, recent-message cache and persist-queue in Redis.
  * Key layout (P3 — tmp_doc/05 Track 1):
  *   room:{roomId}:msgseq     — Hash (messageId -> assigned seq; doubles as dedup + seq lookup)
- *   room:{roomId}:seqcounter — String (INCR'd to hand out the next seq)
+ *   room:{roomId}:seqcounter — String (INCR'd to hand out the next seq; reseeded from
+ *                              DynamoDB's max seq if missing, never restarted at 1)
  *   room:{roomId}:recent     — ZSet (score=seq, member=json-with-seq; replaces the old
  *                              LIST-based cache so reconnecting clients can resume by seq)
  *   room:{roomId}:to_persist — List (RPush, consumed by persist-worker)
@@ -54,13 +56,20 @@ public class RedisMessageService {
      * never taken from client input as-is. The seq is embedded via a plain string splice
      * rather than JSON parsing, which Lua has no built-in support for.
      *
-     * Returns "{seq}:0:" for an id already seen (duplicate; no json), or
-     * "{seq}:1:{jsonWithSeq}" for a freshly assigned one.
+     * The script never creates a missing seq counter itself: a bare INCR would silently restart
+     * the room at seq 1 after Redis lost its data, reusing seqs clients and DynamoDB already
+     * hold. It returns "0:2:" instead, and the caller seeds the counter from DynamoDB first.
+     *
+     * Returns "{seq}:0:" for an id already seen (duplicate; no json),
+     * "{seq}:1:{jsonWithSeq}" for a freshly assigned one, or "0:2:" if the counter is missing.
      */
     private static final RedisScript<String> ASSIGN_SEQ_AND_QUEUE_SCRIPT = RedisScript.of(
             "local existing = redis.call('HGET', KEYS[1], ARGV[1])\n" +
                     "if existing then\n" +
                     "  return existing .. ':0:'\n" +
+                    "end\n" +
+                    "if redis.call('EXISTS', KEYS[2]) == 0 then\n" +
+                    "  return '0:2:'\n" +
                     "end\n" +
                     "local seq = redis.call('INCR', KEYS[2])\n" +
                     "redis.call('HSET', KEYS[1], ARGV[1], seq)\n" +
@@ -73,8 +82,15 @@ public class RedisMessageService {
                     "return tostring(seq) .. ':1:' .. jsonWithSeq",
             String.class);
 
+    private static final String NEEDS_SEED = "2";
+
+    /** How far past DynamoDB's max seq a reseeded counter starts — must exceed the number of
+     *  messages a room can accumulate between persist ticks. */
+    static final long SEED_GAP = 1000;
+
     private final StringRedisTemplate redis;
     private final WsMetrics metrics;
+    private final MessageRepository messageRepository;
 
     @Value("${redis.message.recent-count:50}")
     private long recentCount;
@@ -82,9 +98,10 @@ public class RedisMessageService {
     @Value("${redis.message.ttl-seconds:86400}")
     private long ttlSeconds;
 
-    public RedisMessageService(StringRedisTemplate redis, WsMetrics metrics) {
+    public RedisMessageService(StringRedisTemplate redis, WsMetrics metrics, MessageRepository messageRepository) {
         this.redis = redis;
         this.metrics = metrics;
+        this.messageRepository = messageRepository;
     }
 
     /** Outcome of {@link #saveMessage}: whether this id was new, its assigned seq, and (only
@@ -117,10 +134,15 @@ public class RedisMessageService {
         String persistKey    = "room:" + roomId + ":to_persist";
         String activeKey     = "rooms:active";
 
-        String result = redis.execute(
-                ASSIGN_SEQ_AND_QUEUE_SCRIPT,
-                List.of(seqHashKey, seqCounterKey, recentKey, persistKey, activeKey),
-                messageId, json, roomId, String.valueOf(recentCount), String.valueOf(ttlSeconds));
+        List<String> keys = List.of(seqHashKey, seqCounterKey, recentKey, persistKey, activeKey);
+        String result = runAssignScript(keys, messageId, json, roomId);
+        if (NEEDS_SEED.equals(status(result))) {
+            seedCounter(roomId, seqCounterKey);
+            result = runAssignScript(keys, messageId, json, roomId);
+            if (NEEDS_SEED.equals(status(result))) {
+                throw new IllegalStateException("seq counter for room [" + roomId + "] still missing after seeding");
+            }
+        }
 
         // Parsed from the front (not lastIndexOf, as before) — the trailing json payload for a
         // fresh id can itself contain colons, so only the first two are structural.
@@ -137,6 +159,37 @@ public class RedisMessageService {
         String jsonWithSeq = result.substring(secondSep + 1);
         log.debug("Saved message to Redis for room [{}], seq={}", roomId, seq);
         return new SaveResult(true, seq, jsonWithSeq);
+    }
+
+    private String runAssignScript(List<String> keys, String messageId, String json, String roomId) {
+        return redis.execute(ASSIGN_SEQ_AND_QUEUE_SCRIPT, keys,
+                messageId, json, roomId, String.valueOf(recentCount), String.valueOf(ttlSeconds));
+    }
+
+    /** The single-char status flag between the first two colons of a script result. */
+    private static String status(String result) {
+        int firstSep = result.indexOf(':');
+        return result.substring(firstSep + 1, result.indexOf(':', firstSep + 1));
+    }
+
+    /**
+     * Recreates a missing seq counter from the room's persisted history. A room with no
+     * history starts at 0 (first INCR yields 1). Otherwise the counter jumps SEED_GAP past
+     * DynamoDB's max seq: seqs assigned but not yet persisted when Redis lost them are
+     * invisible to DynamoDB, and reusing one would collide with what clients already saw. A
+     * hole only costs clients one resync; a reused seq corrupts ordering and history.
+     *
+     * SETNX so concurrent consumers seeding the same room agree on one value. A DynamoDB
+     * failure propagates, so Kafka retries the message instead of seeding from a wrong value.
+     */
+    private void seedCounter(String roomId, String seqCounterKey) {
+        long maxSeq = messageRepository.getMaxSeq(roomId);
+        long seed = maxSeq == 0 ? 0 : maxSeq + SEED_GAP;
+        boolean set = Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(seqCounterKey, String.valueOf(seed)));
+        if (set && maxSeq > 0) {
+            log.warn("Seq counter for room [{}] was missing; reseeded to {} (DynamoDB max seq {} + gap {})",
+                    roomId, seed, maxSeq, SEED_GAP);
+        }
     }
 
     /**

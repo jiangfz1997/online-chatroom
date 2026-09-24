@@ -11,6 +11,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -88,6 +89,29 @@ class MessageRepositoryTest {
         ArgumentCaptor<PutItemRequest> captor = ArgumentCaptor.forClass(PutItemRequest.class);
         verify(dynamo).putItem(captor.capture());
         assertThat(captor.getValue().tableName()).isEqualTo("Messages");
+    }
+
+    @Test
+    void save_isConditionalOnSeqFreeOrSameMessageId() {
+        // A retry of the same message may overwrite its own row; a different message at the
+        // same seq (counter reuse after Redis data loss) must never replace existing history.
+        repository.save(message("msg-1", "room-1", "t", "alice", "hello", 7L));
+
+        ArgumentCaptor<PutItemRequest> captor = ArgumentCaptor.forClass(PutItemRequest.class);
+        verify(dynamo).putItem(captor.capture());
+        PutItemRequest req = captor.getValue();
+        assertThat(req.item().get("message_id")).isEqualTo(AttributeValue.fromS("msg-1"));
+        assertThat(req.conditionExpression()).isEqualTo("attribute_not_exists(seq) OR message_id = :mid");
+        assertThat(req.expressionAttributeValues().get(":mid")).isEqualTo(AttributeValue.fromS("msg-1"));
+    }
+
+    @Test
+    void save_seqTakenByAnotherMessage_throwsSeqConflict() {
+        org.mockito.Mockito.doThrow(ConditionalCheckFailedException.builder().message("taken").build())
+                .when(dynamo).putItem(any(PutItemRequest.class));
+
+        org.junit.jupiter.api.Assertions.assertThrows(SeqConflictException.class,
+                () -> repository.save(message("msg-2", "room-1", "t", "bob", "x", 7L)));
     }
 
     @Test

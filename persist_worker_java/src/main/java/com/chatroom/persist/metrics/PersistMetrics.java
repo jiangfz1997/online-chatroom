@@ -19,6 +19,7 @@ public class PersistMetrics {
 
     private final Counter persistedCounter;
     private final Counter malformedCounter;
+    private final Counter seqConflictCounter;
     private final Timer dynamoWriteTimer;
 
     public PersistMetrics(MeterRegistry registry) {
@@ -29,6 +30,9 @@ public class PersistMetrics {
                 .register(registry);
         this.malformedCounter = Counter.builder("persist.messages.malformed")
                 .description("Messages popped from the to_persist queue but skipped as malformed")
+                .register(registry);
+        this.seqConflictCounter = Counter.builder("persist.messages.seq_conflict")
+                .description("Messages refused because another message already owns their seq in DynamoDB")
                 .register(registry);
         this.dynamoWriteTimer = Timer.builder("persist.dynamodb.write.duration")
                 .description("Latency of a single DynamoDB write (PutItem, batched later in M2b)")
@@ -47,6 +51,10 @@ public class PersistMetrics {
 
     public void messageMalformed() {
         malformedCounter.increment();
+    }
+
+    public void seqConflict() {
+        seqConflictCounter.increment();
     }
 
     public void recordDynamoWrite(Runnable write) {
